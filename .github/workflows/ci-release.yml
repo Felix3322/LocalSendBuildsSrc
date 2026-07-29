@@ -265,7 +265,7 @@ jobs:
   windows:
     name: Windows x86_64 ZIP and MSIX
     needs: metadata
-    runs-on: windows-latest
+    runs-on: windows-2022
 
     steps:
       - name: Enable long file paths
