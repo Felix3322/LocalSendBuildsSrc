@@ -284,12 +284,12 @@ jobs:
           channel: stable
 
       - name: Install dependencies
-        working-directory: S:\\app
+        working-directory: S:/app
         shell: pwsh
         run: flutter pub get
 
       - name: Build Windows app
-        working-directory: S:\\app
+        working-directory: S:/app
         shell: pwsh
         run: flutter build windows --release
 
@@ -298,15 +298,15 @@ jobs:
         env:
           VERSION: ${{ needs.metadata.outputs.version }}
         run: |
-          New-Item -ItemType File -Path "S:\\app\\build\\windows\\x64\\runner\\Release\\settings.json" -Force | Out-Null
-          Copy-Item "S:\\support\\build\\windows\\x64\\msvcp140.dll" "S:\\app\\build\\windows\\x64\\runner\\Release\\"
-          Copy-Item "S:\\support\\build\\windows\\x64\\vcruntime140.dll" "S:\\app\\build\\windows\\x64\\runner\\Release\\"
-          Copy-Item "S:\\support\\build\\windows\\x64\\vcruntime140_1.dll" "S:\\app\\build\\windows\\x64\\runner\\Release\\"
-          New-Item -ItemType Directory -Path S:\\dist -Force | Out-Null
-          Compress-Archive -Path "S:\\app\\build\\windows\\x64\\runner\\Release\\*" -DestinationPath "S:\\dist\\LocalSend-$env:VERSION-windows-x86_64.zip" -Force
+          New-Item -ItemType File -Path "S:/app\\build\\windows\\x64\\runner\\Release\\settings.json" -Force | Out-Null
+          Copy-Item "S:/support\\build\\windows\\x64\\msvcp140.dll" "S:/app\\build\\windows\\x64\\runner\\Release\\"
+          Copy-Item "S:/support\\build\\windows\\x64\\vcruntime140.dll" "S:/app\\build\\windows\\x64\\runner\\Release\\"
+          Copy-Item "S:/support\\build\\windows\\x64\\vcruntime140_1.dll" "S:/app\\build\\windows\\x64\\runner\\Release\\"
+          New-Item -ItemType Directory -Path S:/dist -Force | Out-Null
+          Compress-Archive -Path "S:/app\\build\\windows\\x64\\runner\\Release\\*" -DestinationPath "S:/dist\\LocalSend-$env:VERSION-windows-x86_64.zip" -Force
 
       - name: Create unsigned MSIX
-        working-directory: S:\\app
+        working-directory: S:/app
         shell: pwsh
         env:
           VERSION: ${{ needs.metadata.outputs.version }}
@@ -314,7 +314,7 @@ jobs:
           flutter pub add --dev "msix:3.18.0"
           dart run msix:create `
             --build-windows false `
-            --output-path "$env:GITHUB_WORKSPACE\dist" `
+            --output-path "S:/dist" `
             --output-name "LocalSend-${env:VERSION}-windows-x86_64-unsigned" `
             --display-name "LocalSend" `
             --publisher-display-name "OB_BUFF" `
