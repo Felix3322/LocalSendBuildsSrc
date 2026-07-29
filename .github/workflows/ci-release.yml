@@ -302,6 +302,14 @@ jobs:
           }
           Set-Content -Path $runnerCmakeFile -Value $runnerCmake.Replace($dwmapiLink, "$dwmapiLink`n$runtimeObjectLink") -NoNewline
 
+          $appCmakeFile = "C:/s/app/windows/CMakeLists.txt"
+          $appCmake = Get-Content -Path $appCmakeFile -Raw
+          $missingHelperInstall = '(?m)^\s*"localsend_msix_helper\.msix"\r?\n\s*"install_msix_helper\.ps1"\r?\n'
+          if (-not [regex]::IsMatch($appCmake, $missingHelperInstall)) {
+            throw "Expected proprietary MSIX helper install entries were not found."
+          }
+          Set-Content -Path $appCmakeFile -Value ([regex]::Replace($appCmake, $missingHelperInstall, "")) -NoNewline
+
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: "3.41.9"
@@ -315,15 +323,7 @@ jobs:
       - name: Build Windows app
         working-directory: C:/s/app
         shell: pwsh
-        run: flutter build windows --release --verbose
-
-      - name: Trace Windows installation on failure
-        if: failure()
-        working-directory: C:/s/app/build/windows/x64
-        shell: pwsh
-        run: |
-          & cmake -DBUILD_TYPE=Release --trace-expand -P cmake_install.cmake
-          exit 0
+        run: flutter build windows --release
 
       - name: Create portable ZIP
         shell: pwsh
