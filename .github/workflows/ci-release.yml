@@ -1,0 +1,395 @@
+name: Build and publish preview release
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  metadata:
+    name: Resolve build metadata
+    runs-on: ubuntu-24.04
+    outputs:
+      version: \${{ steps.metadata.outputs.version }}
+      tag: \${{ steps.metadata.outputs.tag }}
+      title: \${{ steps.metadata.outputs.title }}
+      short_sha: \${{ steps.metadata.outputs.short_sha }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - id: metadata
+        name: Create a unique prerelease tag
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="$(sed -nE 's/^version:[[:space:]]*([^+[:space:]]+).*/\1/p' app/pubspec.yaml)"
+          short_sha="\${GITHUB_SHA::7}"
+          branch="$(printf '%s' "$GITHUB_REF_NAME" | tr '/[:space:]' '-' | tr -cd '[:alnum:]._-')"
+
+          if [ -z "$version" ] || [ -z "$branch" ]; then
+            echo "Unable to determine build metadata." >&2
+            exit 1
+          fi
+
+          tag="preview-$branch-$short_sha-$GITHUB_RUN_ID"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "title=LocalSend $version preview ($short_sha)" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$short_sha" >> "$GITHUB_OUTPUT"
+
+  android:
+    name: Android APKs
+    needs: metadata
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Remove proprietary dependencies
+        run: sh support/scripts/remove_proprietary_dependencies.sh
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.41.9"
+          channel: stable
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.93.1"
+
+      - name: Install dependencies
+        working-directory: app
+        run: flutter pub get
+
+      - name: Build split APKs
+        working-directory: app
+        run: flutter build apk --release --split-per-abi
+
+      - name: Collect APKs
+        shell: bash
+        env:
+          VERSION: \${{ needs.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp app/build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk "dist/LocalSend-$VERSION-android-arm32v7.apk"
+          cp app/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk "dist/LocalSend-$VERSION-android-arm64v8.apk"
+          cp app/build/app/outputs/flutter-apk/app-x86_64-release.apk "dist/LocalSend-$VERSION-android-x86_64.apk"
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: android-apks
+          path: dist/
+          if-no-files-found: error
+          compression-level: 0
+
+  linux-tar:
+    name: Linux x86_64 tarball
+    needs: metadata
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Linux build dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake libgtk-3-dev ninja-build libayatana-appindicator3-dev
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.41.9"
+          channel: stable
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.93.1"
+
+      - name: Install dependencies
+        working-directory: app
+        run: flutter pub get
+
+      - name: Build Linux app
+        working-directory: app
+        run: flutter build linux --release
+
+      - name: Package tarball
+        shell: bash
+        env:
+          VERSION: \${{ needs.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          tar -C app/build/linux/x64/release/bundle -czf "dist/LocalSend-$VERSION-linux-x86_64.tar.gz" .
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: linux-tarball
+          path: dist/
+          if-no-files-found: error
+          compression-level: 0
+
+  linux-deb:
+    name: Linux x86_64 DEB
+    needs: metadata
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Linux build dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake libgtk-3-dev ninja-build libayatana-appindicator3-dev
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.41.9"
+          channel: stable
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.93.1"
+
+      - name: Package DEB
+        working-directory: app
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter pub get
+          dart pub global activate flutter_distributor
+          export PATH="$PATH:$HOME/.pub-cache/bin"
+          flutter_distributor package --platform linux --targets deb
+
+      - name: Collect DEB
+        shell: bash
+        env:
+          VERSION: \${{ needs.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          deb="$(find app/dist -type f -name '*.deb' -print -quit)"
+          test -n "$deb"
+          mkdir -p dist
+          cp "$deb" "dist/LocalSend-$VERSION-linux-x86_64.deb"
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: linux-deb
+          path: dist/
+          if-no-files-found: error
+          compression-level: 0
+
+  linux-appimage:
+    name: Linux x86_64 AppImage
+    needs: metadata
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Linux build dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake libgtk-3-dev ninja-build libayatana-appindicator3-dev libfuse2
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.41.9"
+          channel: stable
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.93.1"
+
+      - name: Install dependencies
+        working-directory: app
+        run: flutter pub get
+
+      - name: Build Linux app
+        working-directory: app
+        run: flutter build linux --release
+
+      - name: Prepare AppImage input
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p AppDir
+          cp -a app/build/linux/x64/release/bundle/. AppDir/
+          mkdir -p AppDir/usr/share/icons/hicolor/32x32/apps
+          mkdir -p AppDir/usr/share/icons/hicolor/128x128/apps
+          mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
+          cp app/assets/img/logo-32.png AppDir/usr/share/icons/hicolor/32x32/apps/localsend.png
+          cp app/assets/img/logo-128.png AppDir/usr/share/icons/hicolor/128x128/apps/localsend.png
+          cp app/assets/img/logo-256.png AppDir/usr/share/icons/hicolor/256x256/apps/localsend.png
+          cp support/build/appimage/AppImageBuilder_x86_64.yml AppImageBuilder.yml
+
+      - name: Build AppImage
+        uses: AppImageCrafters/build-appimage@57c3bc6963f870ce3be103117de5b5e33ffbaeb6
+        with:
+          recipe: ./AppImageBuilder.yml
+
+      - name: Collect AppImage
+        shell: bash
+        env:
+          VERSION: \${{ needs.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          appimage="$(find . -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
+          test -n "$appimage"
+          mkdir -p dist
+          cp "$appimage" "dist/LocalSend-$VERSION-linux-x86_64.AppImage"
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: linux-appimage
+          path: dist/
+          if-no-files-found: error
+          compression-level: 0
+
+  windows:
+    name: Windows x86_64 ZIP
+    needs: metadata
+    runs-on: windows-2022
+
+    steps:
+      - name: Enable long file paths
+        shell: pwsh
+        run: git config --system core.longpaths true
+
+      - uses: actions/checkout@v6
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.41.9"
+          channel: stable
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.93.1"
+
+      - name: Install dependencies
+        working-directory: app
+        shell: pwsh
+        run: flutter pub get
+
+      - name: Build Windows app
+        working-directory: app
+        shell: pwsh
+        run: flutter build windows --release
+
+      - name: Create portable ZIP
+        shell: pwsh
+        env:
+          VERSION: \${{ needs.metadata.outputs.version }}
+        run: |
+          New-Item -ItemType File -Path "app/build/windows/x64/runner/Release/settings.json" -Force | Out-Null
+          Copy-Item "support/build/windows/x64/msvcp140.dll" "app/build/windows/x64/runner/Release/"
+          Copy-Item "support/build/windows/x64/vcruntime140.dll" "app/build/windows/x64/runner/Release/"
+          Copy-Item "support/build/windows/x64/vcruntime140_1.dll" "app/build/windows/x64/runner/Release/"
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          Compress-Archive -Path "app/build/windows/x64/runner/Release/*" -DestinationPath "dist/LocalSend-$env:VERSION-windows-x86_64.zip" -Force
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: windows-zip
+          path: dist/
+          if-no-files-found: error
+          compression-level: 0
+
+  release:
+    name: Publish prerelease and mirror assets
+    needs:
+      - metadata
+      - android
+      - linux-tar
+      - linux-deb
+      - linux-appimage
+      - windows
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: publish-localsend-builds
+      cancel-in-progress: false
+
+    steps:
+      - name: Download all build assets
+        uses: actions/download-artifact@v7
+        with:
+          pattern: "*"
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create GitHub prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: \${{ needs.metadata.outputs.tag }}
+          name: \${{ needs.metadata.outputs.title }}
+          prerelease: true
+          generate_release_notes: true
+          files: release-assets/*
+        env:
+          GITHUB_TOKEN: \${{ github.token }}
+
+      - name: Require a destination-repository token
+        shell: bash
+        env:
+          DESTINATION_REPO_TOKEN: \${{ secrets.LOCALSEND_BUILDS_TOKEN }}
+        run: |
+          if [ -z "$DESTINATION_REPO_TOKEN" ]; then
+            echo "::error::Set the LOCALSEND_BUILDS_TOKEN secret before mirroring assets."
+            exit 1
+          fi
+
+      - name: Check out the distribution repository
+        uses: actions/checkout@v6
+        with:
+          repository: Felix3322/LocalsendBuilds
+          ref: main
+          token: \${{ secrets.LOCALSEND_BUILDS_TOKEN }}
+          path: distribution
+
+      - name: Copy release files into the distribution repository
+        shell: bash
+        env:
+          TAG: \${{ needs.metadata.outputs.tag }}
+          VERSION: \${{ needs.metadata.outputs.version }}
+          COMMIT: \${{ github.sha }}
+          RUN_URL: \${{ github.server_url }}/\${{ github.repository }}/actions/runs/\${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          destination="distribution/releases/$TAG"
+          mkdir -p "$destination"
+          cp release-assets/* "$destination/"
+          (
+            cd "$destination"
+            sha256sum * > SHA256SUMS.txt
+          )
+
+          jq -n \
+            --arg tag "$TAG" \
+            --arg version "$VERSION" \
+            --arg commit "$COMMIT" \
+            --arg build_url "$RUN_URL" \
+            --arg created_at "$(date --utc --iso-8601=seconds)" \
+            '{tag: $tag, version: $version, source_commit: $commit, build_url: $build_url, created_at: $created_at}' \
+            > "$destination/build.json"
+
+          cd distribution
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "releases/$TAG"
+          git diff --cached --quiet || git commit -m "build: publish $TAG"
+          git pull --rebase origin main
+          git push origin HEAD:main
