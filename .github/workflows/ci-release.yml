@@ -276,7 +276,8 @@ jobs:
 
       - name: Map a short workspace path
         shell: pwsh
-        run: subst S: "$env:GITHUB_WORKSPACE"
+        run: |
+          subst S: "$env:GITHUB_WORKSPACE"
 
       - uses: subosito/flutter-action@v2
         with:
