@@ -284,6 +284,15 @@ jobs:
           }
           $global:LASTEXITCODE = 0
 
+          $cmakeFile = "C:/s/packages/localsend_isolates/rust_builder/windows/CMakeLists.txt"
+          $cmake = Get-Content -Path $cmakeFile -Raw
+          $oldManifest = "../../../../../../rust"
+          $newManifest = "../../../../../../../packages/localsend_isolates/rust"
+          if (-not $cmake.Contains($oldManifest)) {
+            throw "Expected Windows Rust manifest path was not found."
+          }
+          Set-Content -Path $cmakeFile -Value $cmake.Replace($oldManifest, $newManifest) -NoNewline
+
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: "3.41.9"
@@ -297,21 +306,7 @@ jobs:
       - name: Build Windows app
         working-directory: C:/s/app
         shell: pwsh
-        run: flutter build windows --release --verbose
-
-      - name: Report Windows build diagnostics
-        if: failure()
-        working-directory: C:/s/app
-        shell: pwsh
-        run: |
-          rustup show
-          rustc --version --verbose
-          cargo --version
-          Get-ChildItem -Path build/windows/x64/plugins/rust_lib_localsend_app -Recurse -Filter *.vcxproj |
-            ForEach-Object {
-              Write-Output "===== $($_.FullName) ====="
-              Get-Content $_.FullName
-            }
+        run: flutter build windows --release
 
       - name: Create portable ZIP
         shell: pwsh
