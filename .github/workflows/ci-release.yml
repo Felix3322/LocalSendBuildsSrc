@@ -91,6 +91,7 @@ jobs:
           path: dist/
           if-no-files-found: error
           compression-level: 0
+          retention-days: 1
 
   linux-tar:
     name: Linux x86_64 tarball
@@ -138,6 +139,7 @@ jobs:
           path: dist/
           if-no-files-found: error
           compression-level: 0
+          retention-days: 1
 
   linux-deb:
     name: Linux x86_64 DEB
@@ -189,6 +191,7 @@ jobs:
           path: dist/
           if-no-files-found: error
           compression-level: 0
+          retention-days: 1
 
   linux-appimage:
     name: Linux x86_64 AppImage
@@ -257,6 +260,7 @@ jobs:
           path: dist/
           if-no-files-found: error
           compression-level: 0
+          retention-days: 1
 
   windows:
     name: Windows x86_64 ZIP and MSIX
@@ -329,6 +333,7 @@ jobs:
           path: dist/
           if-no-files-found: error
           compression-level: 0
+          retention-days: 1
 
   release:
     name: Publish prerelease and mirror assets
