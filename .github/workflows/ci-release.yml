@@ -293,6 +293,15 @@ jobs:
           }
           Set-Content -Path $cmakeFile -Value $cmake.Replace($oldManifest, $newManifest) -NoNewline
 
+          $runnerCmakeFile = "C:/s/app/windows/runner/CMakeLists.txt"
+          $runnerCmake = Get-Content -Path $runnerCmakeFile -Raw
+          $dwmapiLink = 'target_link_libraries(${BINARY_NAME} PRIVATE "dwmapi.lib")'
+          $runtimeObjectLink = 'target_link_libraries(${BINARY_NAME} PRIVATE "runtimeobject.lib")'
+          if (-not $runnerCmake.Contains($dwmapiLink)) {
+            throw "Expected Windows runner link target was not found."
+          }
+          Set-Content -Path $runnerCmakeFile -Value $runnerCmake.Replace($dwmapiLink, "$dwmapiLink`n$runtimeObjectLink") -NoNewline
+
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: "3.41.9"
