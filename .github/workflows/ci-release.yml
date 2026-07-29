@@ -388,7 +388,7 @@ jobs:
           retention-days: 1
 
   release:
-    name: Publish prerelease and mirror assets
+    name: Publish prerelease and update website index
     needs:
       - metadata
       - android
@@ -409,13 +409,22 @@ jobs:
           path: release-assets
           merge-multiple: true
 
+      - name: Generate SHA-256 checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          (
+            cd release-assets
+            sha256sum * > SHA256SUMS.txt
+          )
+
       - name: Require a destination-repository token
         shell: bash
         env:
           DESTINATION_REPO_TOKEN: ${{ secrets.LOCALSEND_BUILDS_TOKEN }}
         run: |
           if [ -z "$DESTINATION_REPO_TOKEN" ]; then
-            echo "::error::Set the LOCALSEND_BUILDS_TOKEN secret before mirroring assets."
+            echo "::error::Set the LOCALSEND_BUILDS_TOKEN secret before updating the website index."
             exit 1
           fi
 
@@ -438,27 +447,23 @@ jobs:
           token: ${{ secrets.LOCALSEND_BUILDS_TOKEN }}
           path: distribution
 
-      - name: Copy release files and update the website index
+      - name: Update the website index
         shell: bash
         env:
           TAG: ${{ needs.metadata.outputs.tag }}
           VERSION: ${{ needs.metadata.outputs.version }}
           COMMIT: ${{ github.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RELEASE_BASE: ${{ github.server_url }}/${{ github.repository }}/releases/download/${{ needs.metadata.outputs.tag }}
         run: |
           set -euo pipefail
-
-          destination="distribution/releases/$TAG"
-          mkdir -p "$destination"
-          cp release-assets/* "$destination/"
-          (
-            cd "$destination"
-            sha256sum * > SHA256SUMS.txt
-          )
 
           assets='[]'
           for file in release-assets/*; do
             filename="$(basename "$file")"
+            if [ "$filename" = "SHA256SUMS.txt" ]; then
+              continue
+            fi
             size="$(stat -c '%s' "$file")"
             platform="Other"
             format="File"
@@ -488,7 +493,7 @@ jobs:
               --arg platform "$platform" \
               --arg format "$format" \
               --arg arch "$arch" \
-              --arg url "releases/$TAG/$filename" \
+              --arg url "$RELEASE_BASE/$filename" \
               --argjson size "$size" \
               --argjson signed "$signed" \
               '. + [{platform: $platform, format: $format, arch: $arch, url: $url, size: $size, signed: $signed}]' \
@@ -505,8 +510,6 @@ jobs:
             --argjson assets "$assets" \
             '{tag: $tag, version: $version, source_commit: $commit, created_at: $created_at, message: $message, build_url: $build_url, assets: $assets}')"
 
-          printf '%s\n' "$build" | jq . > "$destination/build.json"
-
           if [ -f distribution/builds.json ]; then
             jq --argjson build "$build" \
               '[$build] + [.[] | select(.tag != $build.tag)] | .[:50]' \
@@ -519,7 +522,7 @@ jobs:
           cd distribution
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "releases/$TAG" builds.json
+          git add builds.json
           git diff --cached --quiet || git commit -m "build: publish $TAG"
           git pull --rebase origin main
           git push origin HEAD:main
