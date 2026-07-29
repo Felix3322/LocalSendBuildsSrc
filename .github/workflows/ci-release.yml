@@ -12,10 +12,10 @@ jobs:
     name: Resolve build metadata
     runs-on: ubuntu-24.04
     outputs:
-      version: \${{ steps.metadata.outputs.version }}
-      tag: \${{ steps.metadata.outputs.tag }}
-      title: \${{ steps.metadata.outputs.title }}
-      short_sha: \${{ steps.metadata.outputs.short_sha }}
+      version: ${{ steps.metadata.outputs.version }}
+      tag: ${{ steps.metadata.outputs.tag }}
+      title: ${{ steps.metadata.outputs.title }}
+      short_sha: ${{ steps.metadata.outputs.short_sha }}
 
     steps:
       - uses: actions/checkout@v6
@@ -27,7 +27,7 @@ jobs:
           set -euo pipefail
 
           version="$(sed -nE 's/^version:[[:space:]]*([^+[:space:]]+).*/\1/p' app/pubspec.yaml)"
-          short_sha="\${GITHUB_SHA::7}"
+          short_sha="${GITHUB_SHA::7}"
           branch="$(printf '%s' "$GITHUB_REF_NAME" | tr '/[:space:]' '-' | tr -cd '[:alnum:]._-')"
 
           if [ -z "$version" ] || [ -z "$branch" ]; then
@@ -77,7 +77,7 @@ jobs:
       - name: Collect APKs
         shell: bash
         env:
-          VERSION: \${{ needs.metadata.outputs.version }}
+          VERSION: ${{ needs.metadata.outputs.version }}
         run: |
           set -euo pipefail
           mkdir -p dist
@@ -126,7 +126,7 @@ jobs:
       - name: Package tarball
         shell: bash
         env:
-          VERSION: \${{ needs.metadata.outputs.version }}
+          VERSION: ${{ needs.metadata.outputs.version }}
         run: |
           set -euo pipefail
           mkdir -p dist
@@ -175,7 +175,7 @@ jobs:
       - name: Collect DEB
         shell: bash
         env:
-          VERSION: \${{ needs.metadata.outputs.version }}
+          VERSION: ${{ needs.metadata.outputs.version }}
         run: |
           set -euo pipefail
           deb="$(find app/dist -type f -name '*.deb' -print -quit)"
@@ -243,7 +243,7 @@ jobs:
       - name: Collect AppImage
         shell: bash
         env:
-          VERSION: \${{ needs.metadata.outputs.version }}
+          VERSION: ${{ needs.metadata.outputs.version }}
         run: |
           set -euo pipefail
           appimage="$(find . -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
@@ -292,7 +292,7 @@ jobs:
       - name: Create portable ZIP
         shell: pwsh
         env:
-          VERSION: \${{ needs.metadata.outputs.version }}
+          VERSION: ${{ needs.metadata.outputs.version }}
         run: |
           New-Item -ItemType File -Path "app/build/windows/x64/runner/Release/settings.json" -Force | Out-Null
           Copy-Item "support/build/windows/x64/msvcp140.dll" "app/build/windows/x64/runner/Release/"
@@ -333,18 +333,18 @@ jobs:
       - name: Create GitHub prerelease
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: \${{ needs.metadata.outputs.tag }}
-          name: \${{ needs.metadata.outputs.title }}
+          tag_name: ${{ needs.metadata.outputs.tag }}
+          name: ${{ needs.metadata.outputs.title }}
           prerelease: true
           generate_release_notes: true
           files: release-assets/*
         env:
-          GITHUB_TOKEN: \${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
 
       - name: Require a destination-repository token
         shell: bash
         env:
-          DESTINATION_REPO_TOKEN: \${{ secrets.LOCALSEND_BUILDS_TOKEN }}
+          DESTINATION_REPO_TOKEN: ${{ secrets.LOCALSEND_BUILDS_TOKEN }}
         run: |
           if [ -z "$DESTINATION_REPO_TOKEN" ]; then
             echo "::error::Set the LOCALSEND_BUILDS_TOKEN secret before mirroring assets."
@@ -356,16 +356,16 @@ jobs:
         with:
           repository: Felix3322/LocalsendBuilds
           ref: main
-          token: \${{ secrets.LOCALSEND_BUILDS_TOKEN }}
+          token: ${{ secrets.LOCALSEND_BUILDS_TOKEN }}
           path: distribution
 
       - name: Copy release files into the distribution repository
         shell: bash
         env:
-          TAG: \${{ needs.metadata.outputs.tag }}
-          VERSION: \${{ needs.metadata.outputs.version }}
-          COMMIT: \${{ github.sha }}
-          RUN_URL: \${{ github.server_url }}/\${{ github.repository }}/actions/runs/\${{ github.run_id }}
+          TAG: ${{ needs.metadata.outputs.tag }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+          COMMIT: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
 
