@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: sync-upstream-localsend
@@ -41,3 +42,5 @@ jobs:
 
           git merge --no-edit --no-ff upstream/main
           git push origin HEAD:main
+
+          GH_TOKEN="\${{ github.token }}" gh workflow run ci-release.yml --ref main
