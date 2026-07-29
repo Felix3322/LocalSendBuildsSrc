@@ -259,7 +259,7 @@ jobs:
           compression-level: 0
 
   windows:
-    name: Windows x86_64 ZIP
+    name: Windows x86_64 ZIP and MSIX
     needs: metadata
     runs-on: windows-2022
 
@@ -301,9 +301,31 @@ jobs:
           New-Item -ItemType Directory -Path dist -Force | Out-Null
           Compress-Archive -Path "app/build/windows/x64/runner/Release/*" -DestinationPath "dist/LocalSend-$env:VERSION-windows-x86_64.zip" -Force
 
+      - name: Create unsigned MSIX
+        working-directory: app
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          flutter pub add --dev "msix:3.18.0"
+          dart run msix:create `
+            --build-windows false `
+            --output-path "$env:GITHUB_WORKSPACE\dist" `
+            --output-name "LocalSend-${env:VERSION}-windows-x86_64-unsigned" `
+            --display-name "LocalSend" `
+            --publisher-display-name "OB_BUFF" `
+            --identity-name "OBBUFF.LocalSendPreview" `
+            --publisher "CN=OB_BUFF" `
+            --version "${env:VERSION}.0" `
+            --logo-path "assets\img\logo-256.png" `
+            --architecture x64 `
+            --capabilities "internetClient,internetClientServer,privateNetworkClientServer" `
+            --sign-msix false `
+            --install-certificate false
+
       - uses: actions/upload-artifact@v6
         with:
-          name: windows-zip
+          name: windows-packages
           path: dist/
           if-no-files-found: error
           compression-level: 0
@@ -359,7 +381,7 @@ jobs:
           token: ${{ secrets.LOCALSEND_BUILDS_TOKEN }}
           path: distribution
 
-      - name: Copy release files into the distribution repository
+      - name: Copy release files and update the website index
         shell: bash
         env:
           TAG: ${{ needs.metadata.outputs.tag }}
@@ -377,19 +399,70 @@ jobs:
             sha256sum * > SHA256SUMS.txt
           )
 
-          jq -n \
+          assets='[]'
+          for file in release-assets/*; do
+            filename="$(basename "$file")"
+            size="$(stat -c '%s' "$file")"
+            platform="Other"
+            format="File"
+            arch="Universal"
+            signed='null'
+
+            case "$filename" in
+              *.msix)
+                platform="Windows"; format="MSIX"; arch="x86_64"; signed='false' ;;
+              *windows*.zip)
+                platform="Windows"; format="Portable ZIP"; arch="x86_64" ;;
+              *android-arm32v7.apk)
+                platform="Android"; format="APK"; arch="armeabi-v7a" ;;
+              *android-arm64v8.apk)
+                platform="Android"; format="APK"; arch="arm64-v8a" ;;
+              *android-x86_64.apk)
+                platform="Android"; format="APK"; arch="x86_64" ;;
+              *.AppImage)
+                platform="Linux"; format="AppImage"; arch="x86_64" ;;
+              *.deb)
+                platform="Linux"; format="DEB"; arch="x86_64" ;;
+              *.tar.gz)
+                platform="Linux"; format="tar.gz"; arch="x86_64" ;;
+            esac
+
+            assets="$(jq -c \
+              --arg platform "$platform" \
+              --arg format "$format" \
+              --arg arch "$arch" \
+              --arg url "releases/$TAG/$filename" \
+              --argjson size "$size" \
+              --argjson signed "$signed" \
+              '. + [{platform: $platform, format: $format, arch: $arch, url: $url, size: $size, signed: $signed}]' \
+              <<< "$assets")"
+          done
+
+          build="$(jq -cn \
             --arg tag "$TAG" \
             --arg version "$VERSION" \
             --arg commit "$COMMIT" \
             --arg build_url "$RUN_URL" \
             --arg created_at "$(date --utc --iso-8601=seconds)" \
-            '{tag: $tag, version: $version, source_commit: $commit, build_url: $build_url, created_at: $created_at}' \
-            > "$destination/build.json"
+            --arg message "Automated preview build" \
+            --argjson assets "$assets" \
+            '{tag: $tag, version: $version, source_commit: $commit, created_at: $created_at, message: $message, build_url: $build_url, assets: $assets}')"
+
+          printf '%s\n' "$build" | jq . > "$destination/build.json"
+
+          if [ -f distribution/builds.json ]; then
+            jq --argjson build "$build" \
+              '[$build] + [.[] | select(.tag != $build.tag)] | .[:50]' \
+              distribution/builds.json > distribution/builds.json.tmp
+          else
+            jq -n --argjson build "$build" '[$build]' > distribution/builds.json.tmp
+          fi
+          mv distribution/builds.json.tmp distribution/builds.json
 
           cd distribution
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "releases/$TAG"
+          git add "releases/$TAG" builds.json
           git diff --cached --quiet || git commit -m "build: publish $TAG"
           git pull --rebase origin main
           git push origin HEAD:main
