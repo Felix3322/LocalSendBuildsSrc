@@ -297,7 +297,21 @@ jobs:
       - name: Build Windows app
         working-directory: C:/s/app
         shell: pwsh
-        run: flutter build windows --release
+        run: flutter build windows --release --verbose
+
+      - name: Report Windows build diagnostics
+        if: failure()
+        working-directory: C:/s/app
+        shell: pwsh
+        run: |
+          rustup show
+          rustc --version --verbose
+          cargo --version
+          Get-ChildItem -Path build/windows/x64/plugins/rust_lib_localsend_app -Recurse -Filter *.vcxproj |
+            ForEach-Object {
+              Write-Output "===== $($_.FullName) ====="
+              Get-Content $_.FullName
+            }
 
       - name: Create portable ZIP
         shell: pwsh
