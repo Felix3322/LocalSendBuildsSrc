@@ -315,7 +315,15 @@ jobs:
       - name: Build Windows app
         working-directory: C:/s/app
         shell: pwsh
-        run: flutter build windows --release
+        run: flutter build windows --release --verbose
+
+      - name: Trace Windows installation on failure
+        if: failure()
+        working-directory: C:/s/app/build/windows/x64
+        shell: pwsh
+        run: |
+          & cmake -DBUILD_TYPE=Release --trace-expand -P cmake_install.cmake
+          exit 0
 
       - name: Create portable ZIP
         shell: pwsh
