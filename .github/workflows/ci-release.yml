@@ -57,6 +57,26 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      - name: Create a temporary preview signing key
+        shell: bash
+        run: |
+          set -euo pipefail
+          keytool -genkeypair \
+            -keystore "$RUNNER_TEMP/localsend-preview.jks" \
+            -storepass preview-build \
+            -keypass preview-build \
+            -alias localsend-preview \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 3650 \
+            -dname "CN=LocalSend Preview, O=OB_BUFF"
+          cat > app/android/key.properties <<EOF
+          storePassword=preview-build
+          keyPassword=preview-build
+          keyAlias=localsend-preview
+          storeFile=$RUNNER_TEMP/localsend-preview.jks
+          EOF
+
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: "3.41.9"
@@ -481,7 +501,7 @@ jobs:
             --arg commit "$COMMIT" \
             --arg build_url "$RUN_URL" \
             --arg created_at "$(date --utc --iso-8601=seconds)" \
-            --arg message "Automated preview build" \
+            --arg message "Automated preview build. Android APKs use a temporary CI signing key." \
             --argjson assets "$assets" \
             '{tag: $tag, version: $version, source_commit: $commit, created_at: $created_at, message: $message, build_url: $build_url, assets: $assets}')"
 
