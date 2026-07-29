@@ -1,0 +1,43 @@
+name: Sync upstream LocalSend
+
+on:
+  schedule:
+    - cron: "17 04 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream-localsend
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Merge latest upstream main
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out this fork
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Merge the upstream main branch when it advances
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git remote add upstream https://github.com/localsend/localsend.git
+          git fetch --no-tags upstream main
+
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "Already synchronized with localsend/localsend main."
+            exit 0
+          fi
+
+          git merge --no-edit --no-ff upstream/main
+          git push origin HEAD:main
