@@ -274,18 +274,22 @@ jobs:
 
       - uses: actions/checkout@v6
 
+      - name: Map a short workspace path
+        shell: pwsh
+        run: subst S: "$env:GITHUB_WORKSPACE"
+
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: "3.41.9"
           channel: stable
 
       - name: Install dependencies
-        working-directory: app
+        working-directory: S:\\app
         shell: pwsh
         run: flutter pub get
 
       - name: Build Windows app
-        working-directory: app
+        working-directory: S:\\app
         shell: pwsh
         run: flutter build windows --release
 
@@ -294,15 +298,15 @@ jobs:
         env:
           VERSION: ${{ needs.metadata.outputs.version }}
         run: |
-          New-Item -ItemType File -Path "app/build/windows/x64/runner/Release/settings.json" -Force | Out-Null
-          Copy-Item "support/build/windows/x64/msvcp140.dll" "app/build/windows/x64/runner/Release/"
-          Copy-Item "support/build/windows/x64/vcruntime140.dll" "app/build/windows/x64/runner/Release/"
-          Copy-Item "support/build/windows/x64/vcruntime140_1.dll" "app/build/windows/x64/runner/Release/"
-          New-Item -ItemType Directory -Path dist -Force | Out-Null
-          Compress-Archive -Path "app/build/windows/x64/runner/Release/*" -DestinationPath "dist/LocalSend-$env:VERSION-windows-x86_64.zip" -Force
+          New-Item -ItemType File -Path "S:\\app\\build\\windows\\x64\\runner\\Release\\settings.json" -Force | Out-Null
+          Copy-Item "S:\\support\\build\\windows\\x64\\msvcp140.dll" "S:\\app\\build\\windows\\x64\\runner\\Release\\"
+          Copy-Item "S:\\support\\build\\windows\\x64\\vcruntime140.dll" "S:\\app\\build\\windows\\x64\\runner\\Release\\"
+          Copy-Item "S:\\support\\build\\windows\\x64\\vcruntime140_1.dll" "S:\\app\\build\\windows\\x64\\runner\\Release\\"
+          New-Item -ItemType Directory -Path S:\\dist -Force | Out-Null
+          Compress-Archive -Path "S:\\app\\build\\windows\\x64\\runner\\Release\\*" -DestinationPath "S:\\dist\\LocalSend-$env:VERSION-windows-x86_64.zip" -Force
 
       - name: Create unsigned MSIX
-        working-directory: app
+        working-directory: S:\\app
         shell: pwsh
         env:
           VERSION: ${{ needs.metadata.outputs.version }}
