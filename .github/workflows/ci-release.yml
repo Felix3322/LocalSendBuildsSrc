@@ -330,6 +330,16 @@ jobs:
           path: release-assets
           merge-multiple: true
 
+      - name: Require a destination-repository token
+        shell: bash
+        env:
+          DESTINATION_REPO_TOKEN: ${{ secrets.LOCALSEND_BUILDS_TOKEN }}
+        run: |
+          if [ -z "$DESTINATION_REPO_TOKEN" ]; then
+            echo "::error::Set the LOCALSEND_BUILDS_TOKEN secret before mirroring assets."
+            exit 1
+          fi
+
       - name: Create GitHub prerelease
         uses: softprops/action-gh-release@v2
         with:
@@ -340,16 +350,6 @@ jobs:
           files: release-assets/*
         env:
           GITHUB_TOKEN: ${{ github.token }}
-
-      - name: Require a destination-repository token
-        shell: bash
-        env:
-          DESTINATION_REPO_TOKEN: ${{ secrets.LOCALSEND_BUILDS_TOKEN }}
-        run: |
-          if [ -z "$DESTINATION_REPO_TOKEN" ]; then
-            echo "::error::Set the LOCALSEND_BUILDS_TOKEN secret before mirroring assets."
-            exit 1
-          fi
 
       - name: Check out the distribution repository
         uses: actions/checkout@v6
