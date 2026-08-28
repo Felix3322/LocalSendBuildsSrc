@@ -30,9 +30,13 @@ class HttpServerStartTask implements BaseHttpServerTask {
   /// Optional PIN that senders must provide to start an upload session.
   final String? pin;
 
-  /// Enables web send (download API) so web browsers can download the offered files.
-  /// `null` disables web send.
-  final WebSendParams? webSend;
+  /// Whether the SHA-256 checksums that senders provide for their files are
+  /// verified after receiving.
+  final bool verifyChecksums;
+
+  /// Configures the pages served to browsers: the download page (web download),
+  /// the upload page, or the 403 page when web share is disabled.
+  final WebParams web;
 
   /// Enables the internal `show` endpoint, guarded by this token, that lets another
   /// application instance request this one to show itself. `null` disables it.
@@ -40,7 +44,8 @@ class HttpServerStartTask implements BaseHttpServerTask {
 
   HttpServerStartTask({
     required this.pin,
-    required this.webSend,
+    required this.verifyChecksums,
+    required this.web,
     required this.showToken,
   });
 }
@@ -144,15 +149,15 @@ class HttpServerFileDownloadTargetTask implements BaseHttpServerTask {
   });
 }
 
-/// Rejects a pending [HttpServerWebFileDownloadEvent], e.g. because no source
+/// Fails a pending [HttpServerWebFileDownloadEvent], e.g. because no source
 /// for the file content could be resolved. The download request fails with an
 /// error response. Does nothing if the download was already answered with a
 /// [HttpServerFileDownloadTargetTask].
-class HttpServerRejectFileDownloadTask implements BaseHttpServerTask {
+class HttpServerFailFileDownloadTask implements BaseHttpServerTask {
   final String sessionId;
   final String fileId;
 
-  HttpServerRejectFileDownloadTask({
+  HttpServerFailFileDownloadTask({
     required this.sessionId,
     required this.fileId,
   });
@@ -330,6 +335,19 @@ class HttpServerShowEvent extends HttpServerEvent {
   });
 }
 
+/// The listening socket failed permanently, e.g. because the OS invalidated it
+/// while the application was suspended (iOS reclaims the sockets of suspended
+/// apps). The server has stopped itself; the application must restart it to
+/// become reachable again.
+class HttpServerListenerFailedEvent extends HttpServerEvent {
+  /// Description of the failure.
+  final String error;
+
+  HttpServerListenerFailedEvent({
+    required this.error,
+  });
+}
+
 class _ReceiveSession {
   final HttpServerReceiveConfig config;
 
@@ -398,7 +416,8 @@ Future<void> setupHttpServerIsolate(
                   deviceType: syncState.deviceInfo.deviceType.toRust(),
                   fingerprint: syncState.securityContext.certificateHash,
                   pin: startTask.pin,
-                  webSend: startTask.webSend,
+                  verifyChecksums: startTask.verifyChecksums,
+                  web: startTask.web,
                   showToken: startTask.showToken,
                 );
           } catch (e) {
@@ -523,6 +542,9 @@ Future<void> setupHttpServerIsolate(
                   );
                 case RsServerEvent_Show(:final args):
                   emit(HttpServerShowEvent(args: args));
+                case RsServerEvent_ListenerFailed(:final error):
+                  ref.read(_receiveSessionProvider).session = null;
+                  emit(HttpServerListenerFailedEvent(error: error));
               }
             }
           } finally {
@@ -575,12 +597,12 @@ Future<void> setupHttpServerIsolate(
                 fileDescriptor: targetTask.fileDescriptor,
               );
           return;
-        case HttpServerRejectFileDownloadTask rejectTask:
+        case HttpServerFailFileDownloadTask failTask:
           await ref
               .read(httpServerProvider)
-              .rejectFileDownload(
-                sessionId: rejectTask.sessionId,
-                fileId: rejectTask.fileId,
+              .failFileDownload(
+                sessionId: failTask.sessionId,
+                fileId: failTask.fileId,
               );
           return;
       }
@@ -642,12 +664,12 @@ Future<void> _handleFileUpload({
   } catch (e, st) {
     _logger.severe('Failed to prepare save target', e, st);
 
-    // The Rust server is still waiting for the target; rejecting fails the
+    // The Rust server is still waiting for the target; failing it ends the
     // sender's request which would otherwise hang forever.
     try {
-      await ref.read(httpServerProvider).rejectFileUpload(sessionId: sessionId, fileId: fileId);
+      await ref.read(httpServerProvider).failFileUpload(sessionId: sessionId, fileId: fileId);
     } catch (e) {
-      _logger.warning('Failed to reject file upload', e);
+      _logger.warning('Could not fail the pending file upload', e);
     }
 
     emitFailed(e);
@@ -683,12 +705,6 @@ Future<void> _handleFileUpload({
   }
 
   try {
-    await applyFileTimestamps(
-      target: target,
-      lastModified: dartFile.metadata?.lastModified,
-      lastAccessed: dartFile.metadata?.lastAccessed,
-    );
-
     String? filePath;
     bool savedToGallery = false;
     if (shouldSaveToGallery) {

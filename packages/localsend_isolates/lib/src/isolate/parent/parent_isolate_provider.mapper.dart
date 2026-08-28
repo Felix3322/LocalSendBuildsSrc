@@ -16,7 +16,6 @@ class ParentIsolateStateMapper extends ClassMapperBase<ParentIsolateState> {
     if (_instance == null) {
       MapperContainer.globals.use(_instance = ParentIsolateStateMapper._());
       SyncStateMapper.ensureInitialized();
-      DeviceMapper.ensureInitialized();
     }
     return _instance!;
   }
@@ -30,25 +29,18 @@ class ParentIsolateStateMapper extends ClassMapperBase<ParentIsolateState> {
     _$syncState,
   );
   static IsolateConnector<
-    IsolateTaskStreamResult<Device>,
-    SendToIsolateData<IsolateTask<HttpScanTask>>
+    IsolateTaskStreamResult<DiscoveryResult>,
+    SendToIsolateData<IsolateTask<DiscoveryTask>>
   >?
-  _$httpScanDiscovery(ParentIsolateState v) => v.httpScanDiscovery;
+  _$discovery(ParentIsolateState v) => v.discovery;
   static const Field<
     ParentIsolateState,
     IsolateConnector<
-      IsolateTaskStreamResult<Device>,
-      SendToIsolateData<IsolateTask<HttpScanTask>>
+      IsolateTaskStreamResult<DiscoveryResult>,
+      SendToIsolateData<IsolateTask<DiscoveryTask>>
     >
   >
-  _f$httpScanDiscovery = Field('httpScanDiscovery', _$httpScanDiscovery);
-  static IsolateConnector<Device, SendToIsolateData<MulticastTask>>?
-  _$multicastDiscovery(ParentIsolateState v) => v.multicastDiscovery;
-  static const Field<
-    ParentIsolateState,
-    IsolateConnector<Device, SendToIsolateData<MulticastTask>>
-  >
-  _f$multicastDiscovery = Field('multicastDiscovery', _$multicastDiscovery);
+  _f$discovery = Field('discovery', _$discovery);
   static IsolateConnector<
     IsolateTaskStreamResult<HttpUploadEvent>,
     SendToIsolateData<IsolateTask<BaseHttpUploadTask>>
@@ -79,8 +71,7 @@ class ParentIsolateStateMapper extends ClassMapperBase<ParentIsolateState> {
   @override
   final MappableFields<ParentIsolateState> fields = const {
     #syncState: _f$syncState,
-    #httpScanDiscovery: _f$httpScanDiscovery,
-    #multicastDiscovery: _f$multicastDiscovery,
+    #discovery: _f$discovery,
     #httpUpload: _f$httpUpload,
     #httpServer: _f$httpServer,
   };
@@ -88,8 +79,7 @@ class ParentIsolateStateMapper extends ClassMapperBase<ParentIsolateState> {
   static ParentIsolateState _instantiate(DecodingData data) {
     return ParentIsolateState(
       syncState: data.dec(_f$syncState),
-      httpScanDiscovery: data.dec(_f$httpScanDiscovery),
-      multicastDiscovery: data.dec(_f$multicastDiscovery),
+      discovery: data.dec(_f$discovery),
       httpUpload: data.dec(_f$httpUpload),
       httpServer: data.dec(_f$httpServer),
     );
@@ -170,12 +160,10 @@ abstract class ParentIsolateStateCopyWith<
   $R call({
     SyncState? syncState,
     IsolateConnector<
-      IsolateTaskStreamResult<Device>,
-      SendToIsolateData<IsolateTask<HttpScanTask>>
+      IsolateTaskStreamResult<DiscoveryResult>,
+      SendToIsolateData<IsolateTask<DiscoveryTask>>
     >?
-    httpScanDiscovery,
-    IsolateConnector<Device, SendToIsolateData<MulticastTask>>?
-    multicastDiscovery,
+    discovery,
     IsolateConnector<
       IsolateTaskStreamResult<HttpUploadEvent>,
       SendToIsolateData<IsolateTask<BaseHttpUploadTask>>
@@ -206,15 +194,13 @@ class _ParentIsolateStateCopyWithImpl<$R, $Out>
   @override
   $R call({
     SyncState? syncState,
-    Object? httpScanDiscovery = $none,
-    Object? multicastDiscovery = $none,
+    Object? discovery = $none,
     Object? httpUpload = $none,
     Object? httpServer = $none,
   }) => $apply(
     FieldCopyWithData({
       if (syncState != null) #syncState: syncState,
-      if (httpScanDiscovery != $none) #httpScanDiscovery: httpScanDiscovery,
-      if (multicastDiscovery != $none) #multicastDiscovery: multicastDiscovery,
+      if (discovery != $none) #discovery: discovery,
       if (httpUpload != $none) #httpUpload: httpUpload,
       if (httpServer != $none) #httpServer: httpServer,
     }),
@@ -222,14 +208,7 @@ class _ParentIsolateStateCopyWithImpl<$R, $Out>
   @override
   ParentIsolateState $make(CopyWithData data) => ParentIsolateState(
     syncState: data.get(#syncState, or: $value.syncState),
-    httpScanDiscovery: data.get(
-      #httpScanDiscovery,
-      or: $value.httpScanDiscovery,
-    ),
-    multicastDiscovery: data.get(
-      #multicastDiscovery,
-      or: $value.multicastDiscovery,
-    ),
+    discovery: data.get(#discovery, or: $value.discovery),
     httpUpload: data.get(#httpUpload, or: $value.httpUpload),
     httpServer: data.get(#httpServer, or: $value.httpServer),
   );

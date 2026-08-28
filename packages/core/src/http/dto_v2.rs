@@ -6,10 +6,10 @@ use std::collections::HashMap;
 // Discovery types are shared with the (HTTP-independent) multicast module and
 // therefore live in `crate::model::discovery`. They are re-exported here so that
 // the v2 DTOs remain available under a single path.
-pub(crate) use crate::model::discovery::device_type_v2;
-pub use crate::model::discovery::{MulticastMessageV2, ProtocolTypeV2, PROTOCOL_VERSION_V2};
+use crate::model::discovery::ProtocolType;
+use crate::model::discovery::{device_type_v2, protocol_type_v2};
 
-/// Register request DTO for v2.1 protocol.
+/// Register request DTO for v2.2 protocol.
 ///
 /// Sent to POST /api/localsend/v2/register for device discovery.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -18,7 +18,7 @@ pub struct RegisterDtoV2 {
     /// The display name of the device.
     pub alias: String,
 
-    /// Protocol version (e.g., "2.0", "2.1").
+    /// Protocol version (e.g., "2.0", "2.2").
     pub version: String,
 
     /// Device model (e.g., "Samsung", "Windows"). Optional.
@@ -41,14 +41,15 @@ pub struct RegisterDtoV2 {
     pub port: u16,
 
     /// Protocol type (http or https).
-    pub protocol: ProtocolTypeV2,
+    #[serde(with = "protocol_type_v2")]
+    pub protocol: ProtocolType,
 
     /// Whether the download API (sections 5.2, 5.3) is active.
     #[serde(default)]
     pub download: bool,
 }
 
-/// Register response DTO for v2.1 protocol.
+/// Register response DTO for v2.2 protocol.
 ///
 /// Response from POST /api/localsend/v2/register.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,7 +58,7 @@ pub struct RegisterResponseDtoV2 {
     /// The display name of the device.
     pub alias: String,
 
-    /// Protocol version (e.g., "2.0", "2.1").
+    /// Protocol version (e.g., "2.0", "2.2").
     pub version: String,
 
     /// Device model. Optional.
@@ -82,7 +83,7 @@ pub struct RegisterResponseDtoV2 {
     pub download: bool,
 }
 
-/// Prepare upload request DTO for v2.1 protocol.
+/// Prepare upload request DTO for v2.2 protocol.
 ///
 /// Sent to POST /api/localsend/v2/prepare-upload to initiate a file transfer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,7 +96,7 @@ pub struct PrepareUploadRequestDtoV2 {
     pub files: HashMap<String, FileDto>,
 }
 
-/// Prepare upload response DTO for v2.1 protocol.
+/// Prepare upload response DTO for v2.2 protocol.
 ///
 /// Response from POST /api/localsend/v2/prepare-upload.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,7 +115,7 @@ pub struct PrepareUploadResultV2 {
     pub response: Option<PrepareUploadResponseDtoV2>,
 }
 
-/// Prepare download response DTO for v2.1 protocol (Download API).
+/// Prepare download response DTO for v2.2 protocol (Download API).
 ///
 /// Response from POST /api/localsend/v2/prepare-download.
 /// Used when the sender provides files for others to download.
@@ -131,7 +132,7 @@ pub struct PrepareDownloadResponseDtoV2 {
     pub files: HashMap<String, FileDto>,
 }
 
-/// Info response DTO for v2.1 protocol.
+/// Info response DTO for v2.2 protocol.
 ///
 /// Response from GET /api/localsend/v2/info.
 /// Also used as the `info` field in PrepareDownloadResponseDtoV2.
@@ -141,7 +142,7 @@ pub struct InfoResponseDtoV2 {
     /// The display name of the device.
     pub alias: String,
 
-    /// Protocol version (e.g., "2.0", "2.1").
+    /// Protocol version (e.g., "2.0", "2.2").
     pub version: String,
 
     /// Device model. Optional.
@@ -188,7 +189,7 @@ mod tests {
         assert_eq!(dto.device_type, Some(DeviceType::Desktop));
         assert_eq!(dto.fingerprint, "random string");
         assert_eq!(dto.port, 53317);
-        assert_eq!(dto.protocol, ProtocolTypeV2::Https);
+        assert_eq!(dto.protocol, ProtocolType::Https);
         assert!(dto.download);
     }
 
@@ -227,12 +228,12 @@ mod tests {
         let request = PrepareUploadRequestDtoV2 {
             info: RegisterDtoV2 {
                 alias: "Sender".to_string(),
-                version: "2.1".to_string(),
+                version: "2.2".to_string(),
                 device_model: None,
                 device_type: None,
                 fingerprint: "sender-fingerprint".to_string(),
                 port: 53317,
-                protocol: ProtocolTypeV2::Https,
+                protocol: ProtocolType::Https,
                 download: false,
             },
             files: HashMap::from([(

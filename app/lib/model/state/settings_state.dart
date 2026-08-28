@@ -13,6 +13,7 @@ class SettingsState with SettingsStateMappable {
   final String alias;
   final ThemeMode theme;
   final ColorMode colorMode;
+  final Color customColor; // seed color for ColorMode.custom
   final AppLocale? locale;
   final int port;
   final List<String>? networkWhitelist; // null = disabled
@@ -33,6 +34,9 @@ class SettingsState with SettingsStateMappable {
   final DeviceType? deviceType;
   final String? deviceModel;
   final bool shareViaLinkAutoAccept;
+  final bool receiveViaLinkAutoAccept;
+  final bool createChecksums; // create checksums when sending files
+  final bool verifyChecksums; // verify checksums when receiving files
   final int discoveryTimeout;
   final bool advancedSettings;
 
@@ -41,6 +45,7 @@ class SettingsState with SettingsStateMappable {
     required this.alias,
     required this.theme,
     required this.colorMode,
+    required this.customColor,
     required this.locale,
     required this.port,
     required this.networkWhitelist,
@@ -61,6 +66,9 @@ class SettingsState with SettingsStateMappable {
     required this.deviceType,
     required this.deviceModel,
     required this.shareViaLinkAutoAccept,
+    required this.receiveViaLinkAutoAccept,
+    required this.createChecksums,
+    required this.verifyChecksums,
     required this.discoveryTimeout,
     required this.advancedSettings,
   });

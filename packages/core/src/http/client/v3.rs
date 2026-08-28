@@ -1,7 +1,7 @@
 use super::{ClientError, ResponseExt, ResultWithPublicKey};
 use crate::http;
 use crate::http::client::url::{ApiVersion, TargetUrl};
-use crate::http::dto::ProtocolType;
+use crate::model::discovery::ProtocolType;
 use crate::{crypto, util};
 use lru::LruCache;
 use reqwest::{Response, StatusCode};
@@ -123,16 +123,26 @@ impl LsHttpClientV3 {
             .send()
             .await?;
 
-        let public_key = match protocol {
-            ProtocolType::Https => Some(super::verify_cert_from_res(&res, None)?),
-            _ => None,
+        let (public_key, cert_fingerprint) = match protocol {
+            ProtocolType::Https => (
+                Some(super::verify_cert_from_res(&res, None)?),
+                Some(super::cert_fingerprint_from_res(&res)?),
+            ),
+            _ => (None, None),
         };
 
         let body = res.json::<http::dto::RegisterResponseDto>().await?;
 
-        Ok(ResultWithPublicKey { public_key, body })
+        Ok(ResultWithPublicKey {
+            public_key,
+            cert_fingerprint,
+            body,
+        })
     }
 
+    /// `cancel` is a cancellation token; cancelling it aborts the request with
+    /// [`ClientError::Cancelled`]. Aborting closes the connection, which tells
+    /// the receiver that the sender is no longer waiting for a decision.
     pub async fn prepare_upload(
         &self,
         protocol: ProtocolType,
@@ -140,8 +150,9 @@ impl LsHttpClientV3 {
         port: u16,
         public_key: Option<String>,
         payload: http::dto::PrepareUploadRequestDto,
+        cancel: CancellationToken,
     ) -> Result<http::dto::PrepareUploadResult, ClientError> {
-        let res = self
+        let send = self
             .client
             .post(
                 TargetUrl {
@@ -155,8 +166,12 @@ impl LsHttpClientV3 {
                 .to_string(),
             )
             .body(serde_json::to_string(&payload)?)
-            .send()
-            .await?;
+            .send();
+
+        let res = tokio::select! {
+            res = send => res?,
+            _ = cancel.cancelled() => return Err(ClientError::Cancelled),
+        };
 
         if protocol == ProtocolType::Https {
             super::verify_cert_from_res(&res, public_key)?;

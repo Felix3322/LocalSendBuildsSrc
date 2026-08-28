@@ -84,7 +84,7 @@ impl LsHttpClient {
 
     pub async fn register(
         &self,
-        protocol: http::dto::ProtocolType,
+        protocol: model::discovery::ProtocolType,
         ip: &str,
         port: u16,
         payload: http::dto::RegisterDto,
@@ -94,6 +94,7 @@ impl LsHttpClient {
                 let result = client.register(protocol, ip, port, payload.into()).await?;
                 Ok(ResultWithPublicKey {
                     public_key: result.public_key,
+                    cert_fingerprint: result.cert_fingerprint,
                     body: result.body.into(),
                 })
             }
@@ -103,23 +104,24 @@ impl LsHttpClient {
 
     pub async fn prepare_upload(
         &self,
-        protocol: http::dto::ProtocolType,
+        protocol: model::discovery::ProtocolType,
         ip: &str,
         port: u16,
         public_key: Option<String>,
         payload: http::dto::PrepareUploadRequestDto,
         pin: Option<&str>,
+        cancel: tokio_util::sync::CancellationToken,
     ) -> Result<http::dto::PrepareUploadResult, ClientError> {
         match self {
             LsHttpClient::V2(client) => {
                 let result = client
-                    .prepare_upload(protocol, ip, port, public_key, payload.into(), pin)
+                    .prepare_upload(protocol, ip, port, public_key, payload.into(), pin, cancel)
                     .await?;
                 Ok(result.into())
             }
             LsHttpClient::V3(client) => {
                 client
-                    .prepare_upload(protocol, ip, port, public_key, payload)
+                    .prepare_upload(protocol, ip, port, public_key, payload, cancel)
                     .await
             }
         }
@@ -127,7 +129,7 @@ impl LsHttpClient {
 
     pub async fn upload(
         &self,
-        protocol: http::dto::ProtocolType,
+        protocol: model::discovery::ProtocolType,
         ip: &str,
         port: u16,
         public_key: Option<String>,
@@ -159,7 +161,7 @@ impl LsHttpClient {
 
     pub async fn cancel(
         &self,
-        protocol: http::dto::ProtocolType,
+        protocol: model::discovery::ProtocolType,
         ip: &str,
         port: u16,
         session_id: &str,
@@ -220,11 +222,19 @@ pub(super) fn create_reqwest_client(
     };
 
     // Must be set explicitly, see the doc comment above.
-    tls_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    // HTTP/1.1 only: HTTP/2's flow-control window caps bulk upload throughput.
+    tls_config.alpn_protocols = vec![b"http/1.1".to_vec()];
 
     let mut builder = reqwest::Client::builder()
         .tls_backend_preconfigured(tls_config)
         .tls_info(true)
+        // Peers are on the local network: never dial them through a system or
+        // environment proxy. Proxied connections also lose the `TlsInfo`
+        // response extension that the certificate checks below rely on (#3299).
+        .no_proxy()
+        // Peers never redirect; following one would talk to a different host
+        // than the one whose certificate is being verified.
+        .redirect(reqwest::redirect::Policy::none())
         .dns_resolver(Arc::new(ScopedHostResolver));
 
     if let Some(timeout) = timeout {
@@ -278,6 +288,20 @@ pub(super) fn verify_cert_from_res(
     Ok(public_key)
 }
 
+/// The SHA-256 fingerprint (uppercase hex) of the peer certificate the
+/// response was received over. This — not any fingerprint claimed in the
+/// body — is the peer's identity in HTTPS mode.
+pub(super) fn cert_fingerprint_from_res(response: &Response) -> anyhow::Result<String> {
+    let tls_info_ext = response
+        .extensions()
+        .get::<reqwest::tls::TlsInfo>()
+        .ok_or_else(|| anyhow::anyhow!("TLS info not found"))?;
+    let cert = tls_info_ext
+        .peer_certificate()
+        .ok_or_else(|| anyhow::anyhow!("Certificate not found"))?;
+    Ok(crypto::cert::fingerprint_from_cert_der(cert))
+}
+
 #[derive(Serialize, Deserialize)]
 struct ErrorResponse {
     message: String,
@@ -288,6 +312,11 @@ pub struct ResultWithPublicKey<T> {
     /// Encoded in PEM format.
     /// Only available in HTTPS mode.
     pub public_key: Option<String>,
+
+    /// The SHA-256 fingerprint (uppercase hex) of the peer certificate.
+    /// Only available in HTTPS mode, where it is the peer's identity and
+    /// overrules any fingerprint claimed in the body.
+    pub cert_fingerprint: Option<String>,
 
     /// The response body.
     pub body: T,

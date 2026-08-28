@@ -5,23 +5,61 @@ import android.app.Activity
 import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.database.Cursor
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
 import android.provider.DocumentsContract
 import android.provider.Settings
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 
 
 private const val CHANNEL = "org.localsend.localsend_app/localsend"
 private const val REQUEST_CODE_PICK_DIRECTORY = 1
 private const val REQUEST_CODE_PICK_DIRECTORY_PATH = 2
 private const val REQUEST_CODE_PICK_FILE = 3
+private const val REQUEST_CODE_LOCAL_NETWORK = 4
+
+// Not available as a constant in compileSdk 36.
+private const val PERMISSION_ACCESS_LOCAL_NETWORK = "android.permission.ACCESS_LOCAL_NETWORK"
+private const val API_LEVEL_ANDROID_17 = 37
 
 class MainActivity : FlutterActivity() {
     private var pendingResult: MethodChannel.Result? = null
+    private var pendingPermissionResult: MethodChannel.Result? = null
+
+    /// share_handler drops share intents arriving via onNewIntent while the Dart side
+    /// is not subscribed to its media stream yet, which happens when this singleTask
+    /// activity is relaunched into an existing task while the app is still starting.
+    /// Hold such intents back until Dart reports readiness ("shareIntentReady"), then
+    /// replay them through the regular plugin path.
+    private val pendingShareIntents = mutableListOf<Intent>()
+    private var shareIntentReady = false
+
+    override fun onNewIntent(intent: Intent) {
+        if (!shareIntentReady && (intent.action == Intent.ACTION_SEND || intent.action == Intent.ACTION_SEND_MULTIPLE)) {
+            pendingShareIntents.add(intent)
+            return
+        }
+        super.onNewIntent(intent)
+    }
+
+    private fun onShareIntentReady() {
+        shareIntentReady = true
+        val pending = pendingShareIntents.toList()
+        pendingShareIntents.clear()
+        for (intent in pending) {
+            super.onNewIntent(intent)
+        }
+    }
 
     // Overriding the static methods we need from the Java class, as described
     // in the documentation of `FlutterActivity.NewEngineIntentBuilder`
@@ -75,13 +113,53 @@ class MainActivity : FlutterActivity() {
                     result.success(null)
                 }
 
+                "shareIntentReady" -> {
+                    onShareIntentReady()
+                    result.success(null)
+                }
+
                 "isAnimationsEnabled" -> {
                     result.success(isAnimationsEnabled())
+                }
+
+                "getDownloadsDirectory" -> {
+                    result.success(getDownloadsDirectory())
+                }
+
+                "requestLocalNetworkPermission" -> {
+                    if (hasLocalNetworkPermission()) {
+                        result.success(true)
+                    } else {
+                        pendingPermissionResult = result
+                        requestPermissions(arrayOf(PERMISSION_ACCESS_LOCAL_NETWORK), REQUEST_CODE_LOCAL_NETWORK)
+                    }
                 }
 
                 else -> result.notImplemented()
             }
         }
+    }
+
+    /// Android 17+ gates local network access behind a runtime permission; older versions grant it implicitly.
+    private fun hasLocalNetworkPermission(): Boolean {
+        if (Build.VERSION.SDK_INT < API_LEVEL_ANDROID_17) {
+            return true
+        }
+        return checkSelfPermission(PERMISSION_ACCESS_LOCAL_NETWORK) == PackageManager.PERMISSION_GRANTED
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_CODE_LOCAL_NETWORK) {
+            pendingPermissionResult?.success(grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED)
+            pendingPermissionResult = null
+        }
+    }
+
+    /// Absolute path of the shared "Download" directory (usually /storage/emulated/0/Download).
+    @Suppress("DEPRECATION")
+    private fun getDownloadsDirectory(): String {
+        return Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).absolutePath
     }
 
     private fun isAnimationsEnabled() : Boolean {
@@ -323,7 +401,7 @@ class MainActivity : FlutterActivity() {
                             name = documentFile.name,
                             size = documentFile.size,
                             uri = uri.toString(),
-                            lastModified = documentFile.lastModified,
+                            lastModified = documentFile.lastModified?.toRfc3339(),
                         )
                     )
                 }
@@ -347,7 +425,7 @@ class MainActivity : FlutterActivity() {
                         name = file.name,
                         size = file.size,
                         uri = file.uri.toString(),
-                        lastModified = file.lastModified,
+                        lastModified = file.lastModified?.toRfc3339(),
                     ),
                 )
             }
@@ -427,9 +505,9 @@ data class FileInfo(
     val name: String,
     val size: Long,
     val uri: String,
-    val lastModified: Long
+    val lastModified: String?
 ) {
-    fun toMap(): Map<String, Any> {
+    fun toMap(): Map<String, Any?> {
         return mapOf(
             "name" to name,
             "size" to size,
@@ -437,4 +515,11 @@ data class FileInfo(
             "lastModified" to lastModified
         )
     }
+}
+
+/// Formats milliseconds since epoch as an RFC 3339 string in UTC.
+private fun Long.toRfc3339(): String {
+    val format = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
+    format.timeZone = TimeZone.getTimeZone("UTC")
+    return format.format(Date(this))
 }

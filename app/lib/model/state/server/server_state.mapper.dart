@@ -16,7 +16,7 @@ class ServerStateMapper extends ClassMapperBase<ServerState> {
     if (_instance == null) {
       MapperContainer.globals.use(_instance = ServerStateMapper._());
       ReceiveSessionStateMapper.ensureInitialized();
-      WebSendStateMapper.ensureInitialized();
+      WebShareStateMapper.ensureInitialized();
     }
     return _instance!;
   }
@@ -35,11 +35,8 @@ class ServerStateMapper extends ClassMapperBase<ServerState> {
     'session',
     _$session,
   );
-  static WebSendState? _$webSendState(ServerState v) => v.webSendState;
-  static const Field<ServerState, WebSendState> _f$webSendState = Field(
-    'webSendState',
-    _$webSendState,
-  );
+  static WebShareState? _$web(ServerState v) => v.web;
+  static const Field<ServerState, WebShareState> _f$web = Field('web', _$web);
 
   @override
   final MappableFields<ServerState> fields = const {
@@ -47,7 +44,7 @@ class ServerStateMapper extends ClassMapperBase<ServerState> {
     #port: _f$port,
     #https: _f$https,
     #session: _f$session,
-    #webSendState: _f$webSendState,
+    #web: _f$web,
   };
 
   static ServerState _instantiate(DecodingData data) {
@@ -56,7 +53,7 @@ class ServerStateMapper extends ClassMapperBase<ServerState> {
       port: data.dec(_f$port),
       https: data.dec(_f$https),
       session: data.dec(_f$session),
-      webSendState: data.dec(_f$webSendState),
+      web: data.dec(_f$web),
     );
   }
 
@@ -122,13 +119,13 @@ abstract class ServerStateCopyWith<$R, $In extends ServerState, $Out>
     implements ClassCopyWith<$R, $In, $Out> {
   ReceiveSessionStateCopyWith<$R, ReceiveSessionState, ReceiveSessionState>?
   get session;
-  WebSendStateCopyWith<$R, WebSendState, WebSendState>? get webSendState;
+  WebShareStateCopyWith<$R, WebShareState, WebShareState>? get web;
   $R call({
     String? alias,
     int? port,
     bool? https,
     ReceiveSessionState? session,
-    WebSendState? webSendState,
+    WebShareState? web,
   });
   ServerStateCopyWith<$R2, $In, $Out2> $chain<$R2, $Out2>(Then<$Out2, $R2> t);
 }
@@ -145,22 +142,22 @@ class _ServerStateCopyWithImpl<$R, $Out>
   ReceiveSessionStateCopyWith<$R, ReceiveSessionState, ReceiveSessionState>?
   get session => $value.session?.copyWith.$chain((v) => call(session: v));
   @override
-  WebSendStateCopyWith<$R, WebSendState, WebSendState>? get webSendState =>
-      $value.webSendState?.copyWith.$chain((v) => call(webSendState: v));
+  WebShareStateCopyWith<$R, WebShareState, WebShareState>? get web =>
+      $value.web?.copyWith.$chain((v) => call(web: v));
   @override
   $R call({
     String? alias,
     int? port,
     bool? https,
     Object? session = $none,
-    Object? webSendState = $none,
+    Object? web = $none,
   }) => $apply(
     FieldCopyWithData({
       if (alias != null) #alias: alias,
       if (port != null) #port: port,
       if (https != null) #https: https,
       if (session != $none) #session: session,
-      if (webSendState != $none) #webSendState: webSendState,
+      if (web != $none) #web: web,
     }),
   );
   @override
@@ -169,7 +166,7 @@ class _ServerStateCopyWithImpl<$R, $Out>
     port: data.get(#port, or: $value.port),
     https: data.get(#https, or: $value.https),
     session: data.get(#session, or: $value.session),
-    webSendState: data.get(#webSendState, or: $value.webSendState),
+    web: data.get(#web, or: $value.web),
   );
 
   @override

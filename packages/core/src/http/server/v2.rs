@@ -1,24 +1,26 @@
 use crate::http::dto_v2::{
     InfoResponseDtoV2, PrepareUploadRequestDtoV2, PrepareUploadResponseDtoV2, RegisterDtoV2,
-    RegisterResponseDtoV2, PROTOCOL_VERSION_V2,
+    RegisterResponseDtoV2,
 };
 use crate::http::server::common::collect_to_json::CollectToJson;
 use crate::http::server::common::error::AppError;
 use crate::http::server::common::pin::check_pin;
 use crate::http::server::common::query::parse_query;
 use crate::http::server::common::response::{empty_body, BoxedBody, JsonResponse};
-use crate::http::server::common::save::{FileUploadTarget, SaveResult};
+use crate::http::server::common::save::{FileTimestamps, FileUploadTarget, SaveResult};
 use crate::http::server::common::session::{
-    FileStatusV2, SessionFileV2, SessionStateV2, UploadSessionV2,
+    FileStatusV2, PendingSessionV2, SessionFileV2, SessionStateV2, UploadSessionV2,
 };
 use crate::http::server::PeerIp;
 use crate::http::server::{common, AppState, RequestClientInfo, V2State};
+use crate::model::discovery::PROTOCOL_VERSION_V2;
 use crate::model::transfer::FileDto;
 use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 /// Events emitted by the v2 HTTP server that must be handled by the application.
@@ -117,6 +119,15 @@ pub enum ServerEventV2 {
         /// The session ID as known by the remote device.
         session_id: String,
     },
+
+    /// The listening socket failed permanently, e.g. because the OS
+    /// invalidated it while the application was suspended (iOS reclaims the
+    /// sockets of suspended apps). The server has stopped itself; the
+    /// application must restart it to become reachable again.
+    ListenerFailed {
+        /// Description of the failure.
+        error: String,
+    },
 }
 
 /// The application's decision for a prepare-upload request.
@@ -156,13 +167,21 @@ pub(crate) async fn register(
 
     if let Some(v2) = &state.v2 {
         if fingerprint_valid {
-            let _ = v2
-                .event_tx
-                .send(ServerEventV2::Register {
-                    ip: client_info.ip,
-                    info: payload,
-                })
-                .await;
+            // Not awaited: registrations arrive in bursts (every device on the
+            // network answers an announcement, and a peer scanning its subnet
+            // registers with everyone), so the channel fills up easily. Waiting
+            // would block this request handler — and every later one — until
+            // the application catches up, which is what makes the device stop
+            // answering `register` altogether.
+            //
+            // The event carries no responder, and peers repeat their
+            // announcement, so a dropped registration is recoverable.
+            if let Err(err) = v2.event_tx.try_send(ServerEventV2::Register {
+                ip: client_info.ip,
+                info: payload,
+            }) {
+                tracing::debug!("Dropped a register event: {err}");
+            }
         } else {
             tracing::warn!(
                 "Ignoring register from {}: claimed fingerprint does not match the client certificate",
@@ -172,7 +191,7 @@ pub(crate) async fn register(
     }
 
     let info = state.info.lock().await.clone();
-    let download = state.web.is_some();
+    let download = state.web.share.download().is_some();
 
     Ok(JsonResponse {
         status: StatusCode::OK,
@@ -189,7 +208,7 @@ pub(crate) async fn register(
 
 pub(crate) async fn info(state: AppState) -> Result<JsonResponse<InfoResponseDtoV2>, AppError> {
     let info = state.info.lock().await.clone();
-    let download = state.web.is_some();
+    let download = state.web.share.download().is_some();
 
     Ok(JsonResponse {
         status: StatusCode::OK,
@@ -229,6 +248,9 @@ pub(crate) async fn prepare_upload(
         return Err(AppError::BadRequest("No files provided".to_string()));
     }
 
+    let session_id = Uuid::new_v4().to_string();
+    let cancelled = CancellationToken::new();
+
     // Claim the single session slot.
     {
         let mut slot = v2.session.lock().await;
@@ -238,10 +260,12 @@ pub(crate) async fn prepare_upload(
                 "Blocked by another session".to_string(),
             ));
         }
-        *slot = Some(SessionStateV2::Pending);
+        *slot = Some(SessionStateV2::Pending(PendingSessionV2 {
+            session_id: session_id.clone(),
+            sender_ip: client_info.ip,
+            cancel: cancelled.clone(),
+        }));
     }
-
-    let session_id = Uuid::new_v4().to_string();
 
     // Frees the slot again if this request is aborted before a session is created.
     let mut pending_guard = PendingSessionGuard::new(v2.clone(), session_id.clone());
@@ -259,9 +283,20 @@ pub(crate) async fn prepare_upload(
         return Err(AppError::Status(StatusCode::INTERNAL_SERVER_ERROR));
     }
 
-    let decision = decision_rx
-        .await
-        .map_err(|_| AppError::Status(StatusCode::INTERNAL_SERVER_ERROR))?;
+    // The sender may cancel the request while the application is deciding.
+    // Returning with the guard still armed frees the slot and emits
+    // [ServerEventV2::PrepareUploadAborted], like a dropped connection.
+    let decision = tokio::select! {
+        decision = decision_rx => {
+            decision.map_err(|_| AppError::Status(StatusCode::INTERNAL_SERVER_ERROR))?
+        }
+        _ = cancelled.cancelled() => {
+            return Err(AppError::Message(
+                StatusCode::FORBIDDEN,
+                "Cancelled by sender".to_string(),
+            ));
+        }
+    };
 
     let accepted_ids = match decision {
         PrepareUploadDecisionV2::Decline => {
@@ -367,7 +402,17 @@ pub(crate) async fn upload(
     let mut upload_guard = UploadGuard::new(v2.clone(), session_id.clone(), file_id.clone());
 
     let file_size = file_dto.size;
-    let expected_sha256 = file_dto.sha256.clone();
+    let expected_sha256 = match v2.verify_checksums {
+        true => file_dto.sha256.clone(),
+        false => None,
+    };
+    let timestamps = match &file_dto.metadata {
+        Some(metadata) => FileTimestamps {
+            modified: metadata.modified_time(),
+            accessed: metadata.accessed_time(),
+        },
+        None => FileTimestamps::default(),
+    };
     let (target_tx, target_rx) = oneshot::channel::<FileUploadTarget>();
 
     let event = ServerEventV2::FileUpload {
@@ -386,8 +431,14 @@ pub(crate) async fn upload(
         return Err(AppError::Status(StatusCode::INTERNAL_SERVER_ERROR));
     };
 
-    let result =
-        common::save::save_req_to_target(req, target, file_size, expected_sha256.as_deref()).await;
+    let result = common::save::save_req_to_target(
+        req,
+        target,
+        file_size,
+        expected_sha256.as_deref(),
+        timestamps,
+    )
+    .await;
 
     upload_guard.finish(result).await;
 
@@ -408,8 +459,36 @@ pub(crate) async fn cancel(
 ) -> Result<Response<BoxedBody>, AppError> {
     let v2 = require_v2(&state)?;
     let query = parse_query(req.uri().query());
+    let session_id = query.get("sessionId");
 
-    if let Some(session_id) = query.get("sessionId") {
+    // A pending prepare-upload request: the sender does not know the session
+    // ID yet (it is part of the response), so a cancel from the pending
+    // sender's address is accepted without one.
+    let pending_cancelled = {
+        let slot = v2.session.lock().await;
+        match slot.as_ref() {
+            Some(SessionStateV2::Pending(pending))
+                if pending.sender_ip == client_info.ip
+                    && session_id.is_none_or(|id| *id == pending.session_id) =>
+            {
+                tracing::info!(
+                    "Pending upload session cancelled by sender: {}",
+                    pending.session_id
+                );
+                // The waiting prepare-upload handler frees the slot and
+                // notifies the application.
+                pending.cancel.cancel();
+                true
+            }
+            _ => false,
+        }
+    };
+
+    if pending_cancelled {
+        return Ok(Response::new(empty_body()));
+    }
+
+    if let Some(session_id) = session_id {
         let cancelled = {
             let mut slot = v2.session.lock().await;
             match slot.as_ref() {
@@ -515,7 +594,7 @@ impl Drop for PendingSessionGuard {
 
 async fn clear_pending_session(v2: &V2State) {
     let mut slot = v2.session.lock().await;
-    if matches!(*slot, Some(SessionStateV2::Pending)) {
+    if matches!(*slot, Some(SessionStateV2::Pending(_))) {
         *slot = None;
     }
 }

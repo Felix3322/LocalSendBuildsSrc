@@ -10,7 +10,7 @@ pub use peer_ip::PeerIp;
 use crate::crypto::cert::{fingerprint_from_cert_der, public_key_from_cert_der};
 use crate::http::server::internal::{InternalConfig, InternalState};
 use crate::http::server::v2::ServerEventV2;
-use crate::http::server::web::WebSendConfig;
+use crate::http::server::web::{WebConfig, WebShare};
 use crate::http::state::ClientInfo;
 use common::client_cert_verifier::CustomClientCertVerifier;
 use common::error::AppError;
@@ -32,12 +32,17 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
-use web::WebPageState;
+use web::WebState;
 
 /// Configuration for the v2 (legacy) protocol endpoints.
 pub struct ServerConfigV2 {
     /// Optional PIN that senders must provide via the `pin` query parameter.
     pub pin: Option<String>,
+
+    /// Whether the SHA-256 checksums that senders provide for their files are
+    /// verified after receiving. When disabled, received files are not hashed
+    /// and a mismatch is not detected.
+    pub verify_checksums: bool,
 
     /// Channel on which the server emits events that must be handled by the application.
     pub event_tx: mpsc::Sender<ServerEventV2>,
@@ -47,6 +52,9 @@ pub struct ServerConfigV2 {
 pub(crate) struct V2State {
     /// Optional PIN required for prepare-upload requests.
     pub(crate) pin: Option<String>,
+
+    /// Whether sender-provided SHA-256 checksums are verified after receiving.
+    pub(crate) verify_checksums: bool,
 
     /// Channel on which server events are emitted to the application.
     pub(crate) event_tx: mpsc::Sender<ServerEventV2>,
@@ -63,8 +71,8 @@ pub struct AppState {
     /// Information about server's device.
     info: Arc<Mutex<ClientInfo>>,
 
-    /// State for serving web pages.
-    web: Option<Arc<WebPageState>>,
+    /// Runtime state of the browser-facing pages and web download.
+    web: Arc<WebState>,
 
     /// State for application-internal endpoints.
     internal: Option<Arc<InternalState>>,
@@ -84,23 +92,23 @@ impl AppState {
         info: Arc<Mutex<ClientInfo>>,
         internal_config: Option<InternalConfig>,
         v2_config: Option<ServerConfigV2>,
-        web_send_config: Option<WebSendConfig>,
+        web_config: WebConfig,
     ) -> Self {
         let v2 = v2_config.map(|config| {
             Arc::new(V2State {
                 pin: config.pin,
+                verify_checksums: config.verify_checksums,
                 event_tx: config.event_tx,
                 session: Mutex::new(None),
                 pin_attempts: Mutex::new(LruCache::new(NonZeroUsize::new(200).unwrap())),
             })
         });
 
-        let web = web_send_config.map(|config| Arc::new(WebPageState::new(config)));
         let internal = internal_config.map(|config| Arc::new(InternalState::new(config)));
 
         Self {
             info,
-            web,
+            web: Arc::new(WebState::from(web_config)),
             internal,
             received_nonce_map: Arc::new(Mutex::new(LruCache::new(
                 NonZeroUsize::new(200).unwrap(),
@@ -118,6 +126,12 @@ impl AppState {
 pub struct ServerHandle {
     v2: Option<Arc<V2State>>,
 
+    /// The port the listeners are bound to.
+    port: u16,
+
+    /// Whether the IPv6 wildcard listener could be bound.
+    ipv6_bound: bool,
+
     /// The task running the accept loops. Completes after a stop has been
     /// requested, the listeners have been dropped and all connections have
     /// been closed.
@@ -125,6 +139,41 @@ pub struct ServerHandle {
 }
 
 impl ServerHandle {
+    /// The port the listeners are bound to. Relevant when the server was
+    /// started with port 0, where the OS picks the port.
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// The socket addresses this server can be reached at: every address of
+    /// the non-loopback interfaces, restricted to the address families that
+    /// are actually bound. The listeners themselves only know the wildcard
+    /// addresses, so the concrete addresses come from interface enumeration.
+    ///
+    /// Link-local IPv6 addresses are skipped: peers can only use them together
+    /// with their own scope, which this device cannot know.
+    ///
+    /// Empty when the interfaces cannot be enumerated.
+    pub fn local_addresses(&self) -> Vec<SocketAddr> {
+        let Ok(interfaces) = if_addrs::get_if_addrs() else {
+            return Vec::new();
+        };
+        let mut addresses: Vec<SocketAddr> = interfaces
+            .into_iter()
+            .filter(|interface| !interface.is_loopback())
+            .filter_map(|interface| match interface.ip() {
+                IpAddr::V4(address) => Some(SocketAddr::new(address.into(), self.port)),
+                IpAddr::V6(address) if self.ipv6_bound && !address.is_unicast_link_local() => {
+                    Some(SocketAddr::new(address.into(), self.port))
+                }
+                IpAddr::V6(_) => None,
+            })
+            .collect();
+        addresses.sort();
+        addresses.dedup();
+        addresses
+    }
+
     /// Waits until the server task has terminated, the listeners are closed
     /// and all connections have been dropped, so that the port can be bound again.
     /// Must be called after requesting a stop via the stop channel.
@@ -138,7 +187,7 @@ impl ServerHandle {
     /// e.g. because the user aborted the transfer on the receiving side.
     ///
     /// Uploads that are already in progress still run to completion, but new
-    /// upload requests are rejected and a new session can be created.
+    /// upload requests fail and a new session can be created.
     /// No [ServerEventV2::SessionEnd] is emitted: the application initiated
     /// the cancellation itself.
     ///
@@ -165,15 +214,21 @@ pub async fn start_with_port(
     info: ClientInfo,
     internal_config: Option<InternalConfig>,
     v2_config: Option<ServerConfigV2>,
-    web_send_config: Option<WebSendConfig>,
+    web_config: WebConfig,
     stop_rx: oneshot::Receiver<()>,
 ) -> anyhow::Result<ServerHandle> {
+    // Installed before returning, so that a client built right after (which
+    // skips the install when a provider exists) does not race the accept task.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let ipv4_socket_addr = SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), port);
-    let ipv6_socket_addr = SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), port);
     let info = Arc::new(Mutex::new(info));
-    let state = AppState::new(info.clone(), internal_config, v2_config, web_send_config);
+    let state = AppState::new(info.clone(), internal_config, v2_config, web_config);
 
     let ipv4_listener = tokio::net::TcpListener::bind(ipv4_socket_addr).await?;
+    // With port 0, the IPv6 listener must reuse the port the IPv4 listener got.
+    let bound_port = ipv4_listener.local_addr()?.port();
+    let ipv6_socket_addr = SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), bound_port);
     let ipv6_listener = match bind_ipv6_only(ipv6_socket_addr) {
         Ok(listener) => Some(listener),
         Err(err) => {
@@ -181,6 +236,7 @@ pub async fn start_with_port(
             None
         }
     };
+    let ipv6_bound = ipv6_listener.is_some();
 
     let cancel = CancellationToken::new();
     let connections = TaskTracker::new();
@@ -189,14 +245,29 @@ pub async fn start_with_port(
         let state = state.clone();
         let cancel = cancel.clone();
         let connections = connections.clone();
+        let v2_event_tx = state.v2.as_ref().map(|v2| v2.event_tx.clone());
         async move {
             tokio::select! {
-                _ = start_server_with_listener(ipv4_listener, tls_config.clone(), state.clone(), cancel.clone(), connections.clone()) => {
+                result = start_server_with_listener(ipv4_listener, tls_config.clone(), state.clone(), cancel.clone(), connections.clone()) => {
+                    if let Err(err) = result {
+                        tracing::error!("Server listener failed on {}: {err:#}", ipv4_socket_addr);
+                        // Tell the application, so it can restart the server.
+                        // `try_send` because this task must reach its end even
+                        // when nobody consumes events anymore, so that
+                        // `wait_stopped` cannot hang.
+                        if let Some(event_tx) = v2_event_tx {
+                            let _ = event_tx.try_send(ServerEventV2::ListenerFailed {
+                                error: format!("{err:#}"),
+                            });
+                        }
+                    }
                     tracing::info!("Server stopped on: {}", ipv4_socket_addr);
                 }
                 _ = async {
                     if let Some(listener) = ipv6_listener {
-                        let _ = start_server_with_listener(listener, tls_config, state, cancel.clone(), connections.clone()).await;
+                        if let Err(err) = start_server_with_listener(listener, tls_config, state, cancel.clone(), connections.clone()).await {
+                            tracing::error!("IPv6 server listener failed on {}: {err:#}", ipv6_socket_addr);
+                        }
                     }
 
                     // Keep the future running forever, so we continue using "ipv4 only" even if ipv6 fails.
@@ -215,6 +286,8 @@ pub async fn start_with_port(
 
     Ok(ServerHandle {
         v2: state.v2.clone(),
+        port: bound_port,
+        ipv6_bound,
         task: Mutex::new(Some(task)),
     })
 }
@@ -244,6 +317,50 @@ pub struct TlsConfig {
     pub private_key: String,
 }
 
+/// How long the accept loop waits after a failure that would repeat
+/// immediately, doubling up to [`ACCEPT_BACKOFF_MAX`].
+const ACCEPT_BACKOFF_MIN: std::time::Duration = std::time::Duration::from_millis(50);
+const ACCEPT_BACKOFF_MAX: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// How many times in a row accepting may fail with a per-connection error
+/// before the listener itself is considered broken. A healthy listener
+/// interleaves such errors with successful accepts; only a dead one (e.g. a
+/// socket the OS invalidated during app suspension, whose exact error code is
+/// OS-specific) produces them in an endless, immediate sequence.
+const ACCEPT_FAILURE_LIMIT: u32 = 100;
+
+/// Whether the failed accept concerned only the connection being accepted, so
+/// the next one can be attempted right away.
+fn is_transient_accept_error(err: &std::io::Error) -> bool {
+    matches!(
+        err.kind(),
+        std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::Interrupted
+    )
+}
+
+/// Whether the failed accept means the process momentarily ran out of
+/// resources (a subnet scan opens a few hundred sockets), which resolves once
+/// they are freed again.
+fn is_resource_accept_error(err: &std::io::Error) -> bool {
+    if err.kind() == std::io::ErrorKind::OutOfMemory {
+        return true;
+    }
+    #[cfg(unix)]
+    return matches!(
+        err.raw_os_error(),
+        Some(libc::EMFILE | libc::ENFILE | libc::ENOBUFS | libc::ENOMEM)
+    );
+    #[cfg(windows)]
+    return matches!(
+        err.raw_os_error(),
+        Some(10024 /* WSAEMFILE */ | 10055 /* WSAENOBUFS */)
+    );
+    #[allow(unreachable_code)]
+    false
+}
+
 async fn start_server_with_listener(
     incoming: tokio::net::TcpListener,
     tls_config: Option<TlsConfig>,
@@ -251,12 +368,16 @@ async fn start_server_with_listener(
     cancel: CancellationToken,
     connections: TaskTracker,
 ) -> anyhow::Result<()> {
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    // Browsers have no client certificate, so presenting one is optional while
+    // the web pages are served. A certificate that is presented is still verified.
+    let mandatory_client_auth = matches!(app_state.web.share, WebShare::Disabled);
 
     let tls_acceptor = match tls_config {
-        Some(tls_config) => Some(create_tls_config(&tls_config).inspect_err(|err| {
-            tracing::error!("failed to create tls config: {err:#}");
-        })?),
+        Some(tls_config) => Some(
+            create_tls_config(&tls_config, mandatory_client_auth).inspect_err(|err| {
+                tracing::error!("failed to create tls config: {err:#}");
+            })?,
+        ),
         None => None,
     };
 
@@ -266,8 +387,49 @@ async fn start_server_with_listener(
         tls_acceptor.is_some()
     );
 
+    let mut accept_backoff = ACCEPT_BACKOFF_MIN;
+    let mut accept_failures = 0u32;
     loop {
-        let (tcp_stream, remote_addr) = incoming.accept().await?;
+        let (tcp_stream, remote_addr) = match incoming.accept().await {
+            Ok(accepted) => {
+                accept_backoff = ACCEPT_BACKOFF_MIN;
+                accept_failures = 0;
+                // Disable Nagle: it delays small responses (reqwest already does this on the client side).
+                let _ = accepted.0.set_nodelay(true);
+                accepted
+            }
+            // Accepting fails for two kinds of reasons that say nothing about
+            // the listener, which must both keep the loop alive: the peer went
+            // away before the handshake completed (retried right away, but
+            // bounded by [ACCEPT_FAILURE_LIMIT] because a listener the OS
+            // invalidated during app suspension may report an OS-specific
+            // error that looks per-connection), or the process momentarily ran
+            // out of resources (a subnet scan opens a few hundred sockets).
+            // Exhaustion would otherwise spin: the pending connection stays in
+            // the backlog and fails again immediately, so back off before
+            // retrying, without a limit — it says nothing about the listener,
+            // however long it lasts.
+            //
+            // Every other error means the listening socket itself is broken.
+            // Retrying that forever would leave the application believing it
+            // can still receive, so give up and let the caller report it.
+            Err(err) => {
+                if is_resource_accept_error(&err) {
+                    tracing::warn!("Could not accept a connection: {err:#}");
+                    tokio::time::sleep(accept_backoff).await;
+                    accept_backoff = (accept_backoff * 2).min(ACCEPT_BACKOFF_MAX);
+                    continue;
+                }
+                accept_failures += 1;
+                if is_transient_accept_error(&err) && accept_failures < ACCEPT_FAILURE_LIMIT {
+                    tracing::warn!("Could not accept a connection: {err:#}");
+                    continue;
+                }
+                return Err(anyhow::Error::from(err).context(format!(
+                    "accepting connections failed {accept_failures} time(s) in a row"
+                )));
+            }
+        };
 
         let tls_acceptor = tls_acceptor.clone();
         let app_state = app_state.clone();
@@ -303,11 +465,13 @@ async fn serve_connection(
                 let (_, server_connection) = tls_stream.get_ref();
                 RequestClientInfo {
                     ip: PeerIp::from_remote_addr(&remote_addr),
+                    // No certificate when client auth is optional (web pages served)
+                    // and the client (e.g. a browser) did not present one.
                     cert: server_connection
                         .deref()
                         .deref()
                         .peer_certificates()
-                        .map(|cert| cert.get(0).unwrap().to_vec()),
+                        .and_then(|certs| certs.first().map(|cert| cert.to_vec())),
                 }
             };
 
@@ -346,7 +510,10 @@ async fn serve_connection(
     }
 }
 
-fn create_tls_config(tls_config: &TlsConfig) -> anyhow::Result<tokio_rustls::TlsAcceptor> {
+fn create_tls_config(
+    tls_config: &TlsConfig,
+    mandatory_client_auth: bool,
+) -> anyhow::Result<tokio_rustls::TlsAcceptor> {
     let config = {
         let certs = vec![CertificateDer::from_pem_slice(&tls_config.cert.as_bytes())?];
         let key = PrivateKeyDer::from_pem_slice(&tls_config.private_key.as_bytes())?;
@@ -354,6 +521,7 @@ fn create_tls_config(tls_config: &TlsConfig) -> anyhow::Result<tokio_rustls::Tls
         rustls::ServerConfig::builder()
             .with_client_cert_verifier(Arc::new(CustomClientCertVerifier::try_new(
                 &tls_config.cert,
+                mandatory_client_auth,
             )?))
             .with_single_cert(certs, key)?
     };
@@ -416,7 +584,6 @@ async fn handle_request_inner(mut req: Request<Incoming>) -> Result<Response<Box
 
     match (req.method(), req.uri().path()) {
         (&Method::GET, "/") => Ok(web::index(&state)),
-        (&Method::GET, "/main.js") => Ok(web::main_js(&state)),
         (&Method::GET, "/i18n.json") => web::i18n(&state),
         (&Method::POST, "/api/localsend/v2/prepare-download") => {
             web::prepare_download(req, state, client_info).await
@@ -433,7 +600,8 @@ async fn handle_request_inner(mut req: Request<Incoming>) -> Result<Response<Box
                 .await?
                 .into_response())
         }
-        (&Method::GET, "/api/localsend/v2/info") => {
+        // Old clients (v1.17 and earlier) probe unknown peers on the v1 route
+        (&Method::GET, "/api/localsend/v1/info") | (&Method::GET, "/api/localsend/v2/info") => {
             if !v2_enabled {
                 return Err(AppError::Status(StatusCode::NOT_FOUND));
             }

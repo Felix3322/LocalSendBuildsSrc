@@ -51,7 +51,7 @@ class SignalingService extends ReduxNotifier<SignalingState> {
   SignalingState init() {
     return SignalingState(
       signalingServers: _persistence.getSignalingServers() ?? ['wss://public.localsend.org/v1/ws'],
-      stunServers: _persistence.getStunServers() ?? ['stun:stun.localsend.org:5349'],
+      stunServers: _persistence.getStunServers() ?? ['stun:stun.localsend.org:3478'],
       connections: {},
     );
   }
@@ -218,11 +218,11 @@ extension ClientInfoExt on ClientInfo {
       deviceModel: deviceModel,
       deviceType: deviceType?.toDeviceType() ?? DeviceType.desktop,
       download: false,
-      discoveryMethods: {
-        SignalingDiscovery(
+      channels: [
+        SignalingChannel(
           signalingServer: signalingServer,
         ),
-      },
+      ],
     );
   }
 }

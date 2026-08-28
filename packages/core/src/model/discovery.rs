@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// The protocol version (major.minor) implemented by this crate for the v2 protocol.
-pub const PROTOCOL_VERSION_V2: &str = "2.1";
+pub const PROTOCOL_VERSION_V2: &str = "2.2";
 
 #[derive(Clone, Debug, Deserialize, Eq, Serialize, PartialEq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -14,18 +14,47 @@ pub enum DeviceType {
 }
 
 /// Protocol type for HTTP or HTTPS connections.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Serialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum ProtocolTypeV2 {
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Serialize, PartialEq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ProtocolType {
     Http,
     Https,
 }
 
-impl ProtocolTypeV2 {
+impl ProtocolType {
     pub fn as_str(&self) -> &'static str {
         match self {
-            ProtocolTypeV2::Http => "http",
-            ProtocolTypeV2::Https => "https",
+            ProtocolType::Http => "http",
+            ProtocolType::Https => "https",
+        }
+    }
+}
+
+/// Serde helpers for `ProtocolType` in the v2 protocol.
+///
+/// The v2 protocol uses lowercase values ("http"/"https") on the wire.
+pub(crate) mod protocol_type_v2 {
+    use super::ProtocolType;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(
+        value: &ProtocolType,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(value.as_str())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<ProtocolType, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        match value.as_str() {
+            "http" => Ok(ProtocolType::Http),
+            "https" => Ok(ProtocolType::Https),
+            _ => Err(serde::de::Error::unknown_variant(
+                &value,
+                &["http", "https"],
+            )),
         }
     }
 }
@@ -69,7 +98,7 @@ pub(crate) mod device_type_v2 {
     }
 }
 
-/// Multicast announcement message for UDP discovery (v2.1).
+/// Multicast announcement message for UDP discovery (v2.2).
 ///
 /// Devices that receive an announcement respond over HTTP, so this message is
 /// only ever an announcement and never a response.
@@ -79,7 +108,7 @@ pub struct MulticastMessageV2 {
     /// The display name of the device.
     pub alias: String,
 
-    /// Protocol version (e.g., "2.1").
+    /// Protocol version (e.g., "2.2").
     pub version: String,
 
     /// Device model (e.g., "Samsung", "Windows"). Optional.
@@ -103,7 +132,8 @@ pub struct MulticastMessageV2 {
     pub port: u16,
 
     /// Protocol type (http or https).
-    pub protocol: ProtocolTypeV2,
+    #[serde(with = "protocol_type_v2")]
+    pub protocol: ProtocolType,
 
     /// Whether the download API (sections 5.2, 5.3) is active.
     #[serde(default)]
@@ -118,18 +148,18 @@ mod tests {
     fn test_multicast_message_serialization() {
         let msg = MulticastMessageV2 {
             alias: "Nice Orange".to_string(),
-            version: "2.1".to_string(),
+            version: "2.2".to_string(),
             device_model: Some("Samsung".to_string()),
             device_type: Some(DeviceType::Mobile),
             fingerprint: "random string".to_string(),
             port: 53317,
-            protocol: ProtocolTypeV2::Https,
+            protocol: ProtocolType::Https,
             download: true,
         };
 
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"alias\":\"Nice Orange\""));
-        assert!(json.contains("\"version\":\"2.1\""));
+        assert!(json.contains("\"version\":\"2.2\""));
         assert!(json.contains("\"fingerprint\":\"random string\""));
         assert!(json.contains("\"download\":true"));
         assert!(json.contains("\"protocol\":\"https\""));
@@ -140,7 +170,7 @@ mod tests {
     fn test_multicast_message_deserialization() {
         let json = r#"{
             "alias": "Secret Banana",
-            "version": "2.1",
+            "version": "2.2",
             "deviceModel": "Windows",
             "deviceType": "desktop",
             "fingerprint": "random string",
@@ -151,11 +181,11 @@ mod tests {
 
         let msg: MulticastMessageV2 = serde_json::from_str(json).unwrap();
         assert_eq!(msg.alias, "Secret Banana");
-        assert_eq!(msg.version, "2.1");
+        assert_eq!(msg.version, "2.2");
         assert_eq!(msg.device_model, Some("Windows".to_string()));
         assert_eq!(msg.device_type, Some(DeviceType::Desktop));
         assert_eq!(msg.port, 53317);
-        assert_eq!(msg.protocol, ProtocolTypeV2::Https);
+        assert_eq!(msg.protocol, ProtocolType::Https);
         assert!(msg.download);
     }
 
@@ -163,7 +193,7 @@ mod tests {
     fn test_multicast_message_without_optional_fields() {
         let json = r#"{
             "alias": "Secret Banana",
-            "version": "2.1",
+            "version": "2.2",
             "fingerprint": "random string",
             "port": 53317,
             "protocol": "http"
@@ -172,7 +202,7 @@ mod tests {
         let msg: MulticastMessageV2 = serde_json::from_str(json).unwrap();
         assert_eq!(msg.device_model, None);
         assert_eq!(msg.device_type, None);
-        assert_eq!(msg.protocol, ProtocolTypeV2::Http);
+        assert_eq!(msg.protocol, ProtocolType::Http);
         assert!(!msg.download);
     }
 }

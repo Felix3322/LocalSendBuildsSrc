@@ -40,8 +40,6 @@ class TranslationsEnIn extends Translations with BaseTranslations<AppLocale, Tra
 
   // Translations
   @override
-  String get locale => 'English(India)';
-  @override
   String get appName => 'LocalSend';
   @override
   late final _Translations$general$en_IN general = _Translations$general$en_IN._(_root);
@@ -411,8 +409,6 @@ class _Translations$progressPage$en_IN extends Translations$progressPage$en {
   String get savedToGallery => 'Saved in Photos';
   @override
   late final _Translations$progressPage$total$en_IN total = _Translations$progressPage$total$en_IN._(_root);
-  @override
-  late final _Translations$progressPage$remainingTime$en_IN remainingTime = _Translations$progressPage$remainingTime$en_IN._(_root);
 }
 
 // Path: webSharePage
@@ -1075,27 +1071,6 @@ class _Translations$progressPage$total$en_IN extends Translations$progressPage$t
   String speed({required Object speed}) => 'Speed: ${speed}/s';
 }
 
-// Path: progressPage.remainingTime
-class _Translations$progressPage$remainingTime$en_IN extends Translations$progressPage$remainingTime$en {
-  _Translations$progressPage$remainingTime$en_IN._(TranslationsEnIn root) : this._root = root, super.internal(root);
-
-  final TranslationsEnIn _root; // ignore: unused_field
-
-  // Translations
-  @override
-  String seconds({required Object n, required Object ss}) => '${n}:${ss}';
-  @override
-  String minutes({required Object n, required Object ss}) => '${n}:${ss}';
-
-  /// Use 'h' for hours abbreviation and 'm' for minutes
-  @override
-  String hours({required Object h, required Object m}) => '${h}h ${m}m';
-
-  /// Use 'd' for days, 'h' for hours, and 'm' for minutes
-  @override
-  String days({required Object d, required Object h, required Object m}) => '${d}d ${h}h ${m}m';
-}
-
 // Path: dialogs.addFile
 class _Translations$dialogs$addFile$en_IN extends Translations$dialogs$addFile$en {
   _Translations$dialogs$addFile$en_IN._(TranslationsEnIn root) : this._root = root, super.internal(root);
@@ -1131,10 +1106,6 @@ class _Translations$dialogs$addressInput$en_IN extends Translations$dialogs$addr
   // Translations
   @override
   String get title => 'Enter address';
-  @override
-  String get hashtag => 'Hashtag';
-  @override
-  String get ip => 'IP Address';
   @override
   String get recentlyUsed => 'Recently used: ';
 }

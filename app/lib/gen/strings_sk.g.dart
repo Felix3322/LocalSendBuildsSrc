@@ -40,8 +40,6 @@ class TranslationsSk extends Translations with BaseTranslations<AppLocale, Trans
 
   // Translations
   @override
-  String get locale => 'Slovenčina';
-  @override
   String get appName => 'LocalSend';
   @override
   late final _Translations$general$sk general = _Translations$general$sk._(_root);
@@ -62,6 +60,10 @@ class TranslationsSk extends Translations with BaseTranslations<AppLocale, Trans
   @override
   late final _Translations$selectedFilesPage$sk selectedFilesPage = _Translations$selectedFilesPage$sk._(_root);
   @override
+  late final _Translations$deviceDetailsPage$sk deviceDetailsPage = _Translations$deviceDetailsPage$sk._(_root);
+  @override
+  late final _Translations$verifyPage$sk verifyPage = _Translations$verifyPage$sk._(_root);
+  @override
   late final _Translations$receivePage$sk receivePage = _Translations$receivePage$sk._(_root);
   @override
   late final _Translations$receiveOptionsPage$sk receiveOptionsPage = _Translations$receiveOptionsPage$sk._(_root);
@@ -72,11 +74,15 @@ class TranslationsSk extends Translations with BaseTranslations<AppLocale, Trans
   @override
   late final _Translations$webSharePage$sk webSharePage = _Translations$webSharePage$sk._(_root);
   @override
+  late final _Translations$webReceivePage$sk webReceivePage = _Translations$webReceivePage$sk._(_root);
+  @override
   late final _Translations$aboutPage$sk aboutPage = _Translations$aboutPage$sk._(_root);
   @override
   late final _Translations$donationPage$sk donationPage = _Translations$donationPage$sk._(_root);
   @override
   late final _Translations$changelogPage$sk changelogPage = _Translations$changelogPage$sk._(_root);
+  @override
+  late final _Translations$whatsNewPage$sk whatsNewPage = _Translations$whatsNewPage$sk._(_root);
   @override
   late final _Translations$aliasGenerator$sk aliasGenerator = _Translations$aliasGenerator$sk._(_root);
   @override
@@ -189,6 +195,8 @@ class _Translations$receiveTab$sk extends Translations$receiveTab$en {
   late final _Translations$receiveTab$infoBox$sk infoBox = _Translations$receiveTab$infoBox$sk._(_root);
   @override
   late final _Translations$receiveTab$quickSave$sk quickSave = _Translations$receiveTab$quickSave$sk._(_root);
+  @override
+  String get link => 'Prijať cez odkaz';
 }
 
 // Path: sendTab
@@ -339,6 +347,42 @@ class _Translations$selectedFilesPage$sk extends Translations$selectedFilesPage$
   String get deleteAll => 'Vymazať všetky';
 }
 
+// Path: deviceDetailsPage
+class _Translations$deviceDetailsPage$sk extends Translations$deviceDetailsPage$en {
+  _Translations$deviceDetailsPage$sk._(TranslationsSk root) : this._root = root, super.internal(root);
+
+  final TranslationsSk _root; // ignore: unused_field
+
+  // Translations
+  @override
+  String get title => 'Podrobnosti o zariadení';
+  @override
+  String get favorite => 'Obľúbené';
+  @override
+  String get verify => 'Overiť';
+  @override
+  late final _Translations$deviceDetailsPage$info$sk info = _Translations$deviceDetailsPage$info$sk._(_root);
+  @override
+  late final _Translations$deviceDetailsPage$logs$sk logs = _Translations$deviceDetailsPage$logs$sk._(_root);
+}
+
+// Path: verifyPage
+class _Translations$verifyPage$sk extends Translations$verifyPage$en {
+  _Translations$verifyPage$sk._(TranslationsSk root) : this._root = root, super.internal(root);
+
+  final TranslationsSk _root; // ignore: unused_field
+
+  // Translations
+  @override
+  String get title => 'Overiť';
+  @override
+  String get icons => 'Ikony';
+  @override
+  String get text => 'Text';
+  @override
+  String get question => 'Vyzerá to na druhom zariadení rovnako?';
+}
+
 // Path: receivePage
 class _Translations$receivePage$sk extends Translations$receivePage$en {
   _Translations$receivePage$sk._(TranslationsSk root) : this._root = root, super.internal(root);
@@ -386,6 +430,8 @@ class _Translations$sendPage$sk extends Translations$sendPage$en {
   final TranslationsSk _root; // ignore: unused_field
 
   // Translations
+  @override
+  String calculatingChecksum({required Object curr, required Object n}) => 'Výpočet kontrolného súčtu (${curr} / ${n})';
   @override
   String get waiting => 'Čaká sa na odpoveď…';
   @override
@@ -454,6 +500,17 @@ class _Translations$webSharePage$sk extends Translations$webSharePage$en {
   String pendingRequests({required Object n}) => 'Nespracované žiadosti: ${n}';
 }
 
+// Path: webReceivePage
+class _Translations$webReceivePage$sk extends Translations$webReceivePage$en {
+  _Translations$webReceivePage$sk._(TranslationsSk root) : this._root = root, super.internal(root);
+
+  final TranslationsSk _root; // ignore: unused_field
+
+  // Translations
+  @override
+  String get title => 'Prijať cez odkaz';
+}
+
 // Path: aboutPage
 class _Translations$aboutPage$sk extends Translations$aboutPage$en {
   _Translations$aboutPage$sk._(TranslationsSk root) : this._root = root, super.internal(root);
@@ -506,6 +563,19 @@ class _Translations$changelogPage$sk extends Translations$changelogPage$en {
   // Translations
   @override
   String get title => 'Zoznam zmien';
+}
+
+// Path: whatsNewPage
+class _Translations$whatsNewPage$sk extends Translations$whatsNewPage$en {
+  _Translations$whatsNewPage$sk._(TranslationsSk root) : this._root = root, super.internal(root);
+
+  final TranslationsSk _root; // ignore: unused_field
+
+  // Translations
+  @override
+  String title({required Object version}) => 'Novinky vo verzii ${version}';
+  @override
+  late final _Translations$whatsNewPage$changes$sk changes = _Translations$whatsNewPage$changes$sk._(_root);
 }
 
 // Path: aliasGenerator
@@ -915,6 +985,8 @@ class _Translations$settingsTab$receive$sk extends Translations$settingsTab$rece
   String get saveToGallery => 'Uložiť médiá do galérie';
   @override
   String get saveToHistory => 'Uložiť do histórie';
+  @override
+  String get verifyChecksums => 'Overovať kontrolné súčty pri prijímaní súborov';
 }
 
 // Path: settingsTab.send
@@ -928,6 +1000,8 @@ class _Translations$settingsTab$send$sk extends Translations$settingsTab$send$en
   String get title => 'Odoslať';
   @override
   String get shareViaLinkAutoAccept => 'Automaticky prijímať žiadosti v režime "Zdieľať cez odkaz"';
+  @override
+  String get createChecksums => 'Vytvárať kontrolné súčty pri odosielaní súborov';
 }
 
 // Path: settingsTab.network
@@ -1053,6 +1127,40 @@ class _Translations$receiveHistoryPage$entryActions$sk extends Translations$rece
   String get deleteFromHistory => 'Vymazať z histórie';
 }
 
+// Path: deviceDetailsPage.info
+class _Translations$deviceDetailsPage$info$sk extends Translations$deviceDetailsPage$info$en {
+  _Translations$deviceDetailsPage$info$sk._(TranslationsSk root) : this._root = root, super.internal(root);
+
+  final TranslationsSk _root; // ignore: unused_field
+
+  // Translations
+  @override
+  String get name => 'Názov';
+  @override
+  String get address => 'Adresa';
+  @override
+  String get version => 'Verzia';
+  @override
+  String protocol({required Object version}) => 'Protokol v${version}';
+}
+
+// Path: deviceDetailsPage.logs
+class _Translations$deviceDetailsPage$logs$sk extends Translations$deviceDetailsPage$logs$en {
+  _Translations$deviceDetailsPage$logs$sk._(TranslationsSk root) : this._root = root, super.internal(root);
+
+  final TranslationsSk _root; // ignore: unused_field
+
+  // Translations
+  @override
+  String get title => 'Záznamy';
+  @override
+  String get empty => 'Nie sú k dispozícii žiadne záznamy.';
+  @override
+  String discovered({required Object protocol, required Object host}) => 'Objavené cez ${protocol} (${host})';
+  @override
+  String updated({required Object protocol, required Object host}) => 'Aktualizované cez ${protocol} (${host})';
+}
+
 // Path: progressPage.total
 class _Translations$progressPage$total$sk extends Translations$progressPage$total$en {
   _Translations$progressPage$total$sk._(TranslationsSk root) : this._root = root, super.internal(root);
@@ -1078,17 +1186,31 @@ class _Translations$progressPage$remainingTime$sk extends Translations$progressP
 
   // Translations
   @override
-  String seconds({required Object n, required Object ss}) => '${n}:${ss}';
+  String minutesUnit({required num m}) => (_root.$meta.cardinalResolver ?? PluralResolvers.cardinal('sk'))(
+    m,
+    other: '${m}min',
+  );
   @override
-  String minutes({required Object n, required Object ss}) => '${n}:${ss}';
+  String hoursUnit({required num h}) => (_root.$meta.cardinalResolver ?? PluralResolvers.cardinal('sk'))(
+    h,
+    other: '${h}h',
+  );
+  @override
+  String minutes({required Object m, required Object ss}) => '${m}:${ss}';
+  @override
+  String hours({required num h, required num m}) =>
+      '${_root.progressPage.remainingTime.hoursUnit(h: h)} ${_root.progressPage.remainingTime.minutesUnit(m: m)}';
+}
 
-  /// Použiť „h“ pre skratku hodín a „m“ pre minúty
-  @override
-  String hours({required Object h, required Object m}) => '${h}h ${m}m';
+// Path: whatsNewPage.changes
+class _Translations$whatsNewPage$changes$sk extends Translations$whatsNewPage$changes$en {
+  _Translations$whatsNewPage$changes$sk._(TranslationsSk root) : this._root = root, super.internal(root);
 
-  /// Použiť „d“ pre dni, „h“ pre hodiny a „m“ pre minúty
+  final TranslationsSk _root; // ignore: unused_field
+
+  // Translations
   @override
-  String days({required Object d, required Object h, required Object m}) => '${d}d ${h}h ${m}m';
+  late final _Translations$whatsNewPage$changes$v1_18_0$sk v1_18_0 = _Translations$whatsNewPage$changes$v1_18_0$sk._(_root);
 }
 
 // Path: dialogs.addFile
@@ -1126,10 +1248,6 @@ class _Translations$dialogs$addressInput$sk extends Translations$dialogs$address
   // Translations
   @override
   String get title => 'Zadajte adresu';
-  @override
-  String get hashtag => 'Hashtag';
-  @override
-  String get ip => 'IP adresa';
   @override
   String get recentlyUsed => 'Nedávno použité: ';
 }
@@ -1473,6 +1591,8 @@ class _Translations$settingsTab$general$colorOptions$sk extends Translations$set
   String get system => 'Systémová';
   @override
   String get oled => 'OLED';
+  @override
+  String get custom => 'Vlastné';
 }
 
 // Path: settingsTab.general.languageOptions
@@ -1514,4 +1634,19 @@ class _Translations$progressPage$total$title$sk extends Translations$progressPag
   String get canceledSender => 'Zrušené odosielateľom';
   @override
   String get canceledReceiver => 'Zrušené príjemcom';
+}
+
+// Path: whatsNewPage.changes.v1_18_0
+class _Translations$whatsNewPage$changes$v1_18_0$sk extends Translations$whatsNewPage$changes$v1_18_0$en with WhatsNewStrings {
+  _Translations$whatsNewPage$changes$v1_18_0$sk._(TranslationsSk root) : this._root = root, super.internal(root);
+
+  final TranslationsSk _root; // ignore: unused_field
+
+  // Translations
+  @override
+  List<String> get changes => [
+    'Šifrovanie už nespomaľuje prenosy. Ak ste ho predtým vypli, na tomto zariadení bolo opäť zapnuté.',
+    'Žiadosti od obľúbených sa teraz prijímajú automaticky. Táto funkcia je štandardne zapnutá a je možné ju vypnúť v nastaveniach.',
+    'V systéme Android prebiehajú prenosy aj vtedy, keď je aplikácia spustená na pozadí alebo je obrazovka vypnutá. V systéme iOS musí aplikácia zostať spustená v popredí.',
+  ];
 }

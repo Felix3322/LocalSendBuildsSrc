@@ -3,14 +3,15 @@ import 'package:flutter/material.dart';
 import 'package:localsend_app/config/theme.dart';
 import 'package:localsend_app/gen/strings.g.dart';
 import 'package:localsend_app/model/send_mode.dart';
+import 'package:localsend_app/pages/device_details_page.dart';
 import 'package:localsend_app/pages/selected_files_page.dart';
 import 'package:localsend_app/pages/tabs/send_tab_vm.dart';
 import 'package:localsend_app/pages/troubleshoot_page.dart';
 import 'package:localsend_app/provider/animation_provider.dart';
+import 'package:localsend_app/provider/file_transfer_provider.dart';
 import 'package:localsend_app/provider/network/nearby_devices_provider.dart';
 import 'package:localsend_app/provider/network/scan_facade.dart';
 import 'package:localsend_app/provider/network/send_provider.dart';
-import 'package:localsend_app/provider/progress_provider.dart';
 import 'package:localsend_app/provider/selection/selected_sending_files_provider.dart';
 import 'package:localsend_app/provider/settings_provider.dart';
 import 'package:localsend_app/util/favorites.dart';
@@ -35,7 +36,7 @@ import 'package:refena_flutter/refena_flutter.dart';
 import 'package:routerino/routerino.dart';
 
 const _horizontalPadding = 15.0;
-final _options = FilePickerOption.getOptionsForPlatform();
+final pickerOptions = FilePickerOption.getOptionsForPlatform();
 
 class SendTab extends StatelessWidget {
   const SendTab();
@@ -66,7 +67,7 @@ class SendTab extends StatelessWidget {
                 outerVerticalPadding: 10,
                 childPadding: 10,
                 minChildWidth: buttonWidth,
-                children: _options.map((option) {
+                children: pickerOptions.map((option) {
                   return BigButton(
                     icon: option.icon,
                     label: option.label,
@@ -140,11 +141,11 @@ class SendTab extends StatelessWidget {
                               foregroundColor: Theme.of(context).colorScheme.onPrimary,
                             ),
                             onPressed: () async {
-                              if (_options.length == 1) {
+                              if (pickerOptions.length == 1) {
                                 // open directly
                                 await ref.global.dispatchAsync(
                                   PickFileAction(
-                                    option: _options.first,
+                                    option: pickerOptions.first,
                                     context: context,
                                   ),
                                 );
@@ -152,7 +153,7 @@ class SendTab extends StatelessWidget {
                               }
                               await AddFileDialog.open(
                                 context: context,
-                                options: _options,
+                                options: pickerOptions,
                               );
                             },
                             icon: const Icon(Icons.add),
@@ -223,7 +224,7 @@ class SendTab extends StatelessWidget {
                           device: device,
                           isFavorite: favoriteEntry != null,
                           nameOverride: favoriteEntry?.alias,
-                          onFavoriteTap: () async => await vm.onToggleFavorite(context, device),
+                          onDetailsTap: () async => await context.push(() => DeviceDetailsPage(device: device)),
                           onTap: () async => await vm.onTapDevice(context, device),
                         ),
                 ),
@@ -337,7 +338,7 @@ class _ScanButton extends StatelessWidget {
           child: CustomIconButton(
             onPressed: () async {
               context.redux(nearbyDevicesProvider).dispatch(ClearFoundDevicesAction());
-              await context.global.dispatchAsync(StartSmartScan(forceLegacy: true));
+              await context.global.dispatchAsync(StartSmartScan());
             },
             child: Icon(Icons.sync, color: iconColor),
           ),
@@ -533,10 +534,10 @@ class _MultiSendDeviceListTile extends StatelessWidget {
     final double? progress;
     if (session != null) {
       final files = session.files.values.where((f) => f.token != null);
-      final progressNotifier = ref.watch(progressProvider);
+      final transferNotifier = ref.watch(fileTransferProvider);
       final currBytes = files.fold<int>(
         0,
-        (prev, curr) => prev + ((progressNotifier.getProgress(sessionId: session.sessionId, fileId: curr.file.id) * curr.file.size).round()),
+        (prev, curr) => prev + ((transferNotifier.getProgress(sessionId: session.sessionId, fileId: curr.file.id) * curr.file.size).round()),
       );
       final totalBytes = files.fold<int>(0, (prev, curr) => prev + curr.file.size);
       progress = totalBytes == 0 ? 0 : currBytes / totalBytes;
@@ -553,7 +554,7 @@ class _MultiSendDeviceListTile extends StatelessWidget {
       progress: progress,
       isFavorite: isFavorite,
       nameOverride: nameOverride,
-      onFavoriteTap: device.ip == null ? null : () async => await vm.onToggleFavorite(context, device),
+      onDetailsTap: () async => await context.push(() => DeviceDetailsPage(device: device)),
       onTap: () async => await vm.onTapDeviceMultiSend(context, device),
     );
   }

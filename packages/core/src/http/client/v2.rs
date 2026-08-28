@@ -1,22 +1,22 @@
 use super::{ClientError, ResponseExt, ResultWithPublicKey};
 use crate::http::client::url::{ApiVersion, TargetUrl};
-use crate::http::dto::ProtocolType;
 use crate::http::dto_v2::{
     InfoResponseDtoV2, PrepareDownloadResponseDtoV2, PrepareUploadRequestDtoV2,
     PrepareUploadResponseDtoV2, PrepareUploadResultV2, RegisterDtoV2, RegisterResponseDtoV2,
 };
+use crate::model::discovery::ProtocolType;
 use futures_util::StreamExt;
 use reqwest::{Response, StatusCode};
 use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
 
-/// HTTP client for LocalSend Protocol v2.1.
+/// HTTP client for LocalSend Protocol v2.2.
 pub struct LsHttpClientV2 {
     client: reqwest::Client,
 }
 
 impl LsHttpClientV2 {
-    /// Creates a new HTTP client for v2.1 protocol.
+    /// Creates a new HTTP client for v2.2 protocol.
     ///
     /// # Arguments
     /// * `private_key` - PEM-encoded private key for client certificate
@@ -50,6 +50,10 @@ impl LsHttpClientV2 {
             .use_rustls_tls()
             .danger_accept_invalid_certs(true)
             .tls_info(true)
+            // Same as `create_reqwest_client`: peers are local, never proxy
+            // and never redirect.
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
             .build()?;
 
         Ok(Self { client })
@@ -96,14 +100,21 @@ impl LsHttpClientV2 {
             return res.into_error().await;
         }
 
-        let public_key = match protocol {
-            ProtocolType::Https => Some(super::verify_cert_from_res(&res, None)?),
-            _ => None,
+        let (public_key, cert_fingerprint) = match protocol {
+            ProtocolType::Https => (
+                Some(super::verify_cert_from_res(&res, None)?),
+                Some(super::cert_fingerprint_from_res(&res)?),
+            ),
+            _ => (None, None),
         };
 
         let body = res.json::<RegisterResponseDtoV2>().await?;
 
-        Ok(ResultWithPublicKey { public_key, body })
+        Ok(ResultWithPublicKey {
+            public_key,
+            cert_fingerprint,
+            body,
+        })
     }
 
     /// Prepares a file upload session with the receiver.
@@ -119,6 +130,10 @@ impl LsHttpClientV2 {
     /// * `public_key` - Expected public key for verification (HTTPS only)
     /// * `payload` - Upload request with device info and file metadata
     /// * `pin` - Optional PIN if required by receiver
+    /// * `cancel` - Cancellation token; cancelling it aborts the request with
+    ///   [`ClientError::Cancelled`]. Aborting closes the connection, which
+    ///   tells the receiver that the sender is no longer waiting for a
+    ///   decision.
     ///
     /// # Returns
     /// Session ID and accepted file tokens, or an error.
@@ -139,6 +154,7 @@ impl LsHttpClientV2 {
         public_key: Option<String>,
         payload: PrepareUploadRequestDtoV2,
         pin: Option<&str>,
+        cancel: CancellationToken,
     ) -> Result<PrepareUploadResultV2, ClientError> {
         let pin_params: &[(&'static str, &str)] = match &pin {
             Some(pin) => &[("pin", pin)],
@@ -154,13 +170,17 @@ impl LsHttpClientV2 {
         }
         .to_string();
 
-        let res = self
+        let send = self
             .client
             .post(&url)
             .header("Content-Type", "application/json")
             .body(serde_json::to_string(&payload)?)
-            .send()
-            .await?;
+            .send();
+
+        let res = tokio::select! {
+            res = send => res?,
+            _ = cancel.cancelled() => return Err(ClientError::Cancelled),
+        };
 
         if protocol == ProtocolType::Https {
             super::verify_cert_from_res(&res, public_key)?;

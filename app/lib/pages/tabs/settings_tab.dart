@@ -8,7 +8,6 @@ import 'package:localsend_app/model/persistence/color_mode.dart';
 import 'package:localsend_app/pages/about/about_page.dart';
 import 'package:localsend_app/pages/changelog_page.dart';
 import 'package:localsend_app/pages/donation/donation_page.dart';
-import 'package:localsend_app/pages/language_page.dart';
 import 'package:localsend_app/pages/settings/network_interfaces_page.dart';
 import 'package:localsend_app/pages/tabs/settings_tab_controller.dart';
 import 'package:localsend_app/provider/network/server/server_provider.dart';
@@ -16,6 +15,7 @@ import 'package:localsend_app/provider/settings_provider.dart';
 import 'package:localsend_app/provider/version_provider.dart';
 import 'package:localsend_app/util/alias_generator.dart';
 import 'package:localsend_app/util/device_type_ext.dart';
+import 'package:localsend_app/util/i18n.dart';
 import 'package:localsend_app/util/native/macos_channel.dart';
 import 'package:localsend_app/util/native/pick_directory_path.dart';
 import 'package:localsend_app/util/native/platform_check.dart';
@@ -77,15 +77,15 @@ class SettingsTab extends StatelessWidget {
                       return DropdownMenuItem(
                         value: colorMode,
                         alignment: Alignment.center,
-                        child: Text(colorMode.humanName),
+                        child: Text(colorMode.humanName, overflow: TextOverflow.ellipsis),
                       );
                     }).toList(),
-                    onChanged: vm.onChangeColorMode,
+                    onChanged: (colorMode) => vm.onChangeColorMode(context, colorMode),
                   ),
                 ),
                 _ButtonEntry(
                   label: t.settingsTab.general.language,
-                  buttonLabel: vm.settings.locale?.humanName ?? t.settingsTab.general.languageOptions.system,
+                  buttonLabel: vm.settings.locale?.getLocaleName() ?? t.settingsTab.general.languageOptions.system,
                   onTap: () => vm.onTapLanguage(context),
                 ),
                 if (checkPlatformIsDesktop()) ...[
@@ -156,6 +156,9 @@ class SettingsTab extends StatelessWidget {
                   onChanged: (b) async {
                     final old = vm.settings.quickSave;
                     await ref.notifier(settingsProvider).setQuickSave(b);
+                    if (b) {
+                      await ref.notifier(settingsProvider).setQuickSaveFromFavorites(false);
+                    }
                     if (!old && b && context.mounted) {
                       await QuickSaveNotice.open(context);
                     }
@@ -167,6 +170,9 @@ class SettingsTab extends StatelessWidget {
                   onChanged: (b) async {
                     final old = vm.settings.quickSaveFromFavorites;
                     await ref.notifier(settingsProvider).setQuickSaveFromFavorites(b);
+                    if (b) {
+                      await ref.notifier(settingsProvider).setQuickSave(false);
+                    }
                     if (!old && b && context.mounted) {
                       await QuickSaveFromFavoritesNotice.open(context);
                     }
@@ -253,6 +259,19 @@ class SettingsTab extends StatelessWidget {
                     await ref.notifier(settingsProvider).setSaveToHistory(b);
                   },
                 ),
+                if (vm.advanced)
+                  _BooleanEntry(
+                    label: t.settingsTab.receive.verifyChecksums,
+                    value: vm.settings.verifyChecksums,
+                    onChanged: (b) async {
+                      await ref.notifier(settingsProvider).setVerifyChecksums(b);
+
+                      // The checksums are verified by the Rust server, so it needs a restart.
+                      if (ref.read(serverProvider) != null) {
+                        await ref.notifier(serverProvider).restartServerFromSettings();
+                      }
+                    },
+                  ),
               ],
             ),
             if (vm.advanced)
@@ -264,6 +283,13 @@ class SettingsTab extends StatelessWidget {
                     value: vm.settings.shareViaLinkAutoAccept,
                     onChanged: (b) async {
                       await ref.notifier(settingsProvider).setShareViaLinkAutoAccept(b);
+                    },
+                  ),
+                  _BooleanEntry(
+                    label: t.settingsTab.send.createChecksums,
+                    value: vm.settings.createChecksums,
+                    onChanged: (b) async {
+                      await ref.notifier(settingsProvider).setCreateChecksums(b);
                     },
                   ),
                 ],
@@ -301,7 +327,7 @@ class SettingsTab extends StatelessWidget {
                           Tooltip(
                             message: t.general.start,
                             child: TextButton(
-                              style: TextButton.styleFrom(foregroundColor: Theme.of(context).colorScheme.onSurface),
+                              style: TextButton.styleFrom(foregroundColor: Theme.of(context).colorScheme.onSurface, iconSize: 24),
                               onPressed: () => vm.onTapStartServer(context),
                               child: const Icon(Icons.play_arrow),
                             ),
@@ -310,7 +336,7 @@ class SettingsTab extends StatelessWidget {
                           Tooltip(
                             message: t.general.restart,
                             child: TextButton(
-                              style: TextButton.styleFrom(foregroundColor: Theme.of(context).colorScheme.onSurface),
+                              style: TextButton.styleFrom(foregroundColor: Theme.of(context).colorScheme.onSurface, iconSize: 24),
                               onPressed: () => vm.onTapRestartServer(context),
                               child: const Icon(Icons.refresh),
                             ),
@@ -318,7 +344,7 @@ class SettingsTab extends StatelessWidget {
                         Tooltip(
                           message: t.general.stop,
                           child: TextButton(
-                            style: TextButton.styleFrom(foregroundColor: Theme.of(context).colorScheme.onSurface),
+                            style: TextButton.styleFrom(foregroundColor: Theme.of(context).colorScheme.onSurface, iconSize: 24),
                             onPressed: vm.serverState == null ? null : vm.onTapStopServer,
                             child: const Icon(Icons.stop),
                           ),
@@ -554,7 +580,7 @@ class SettingsTab extends StatelessWidget {
                 .watch(versionProvider)
                 .maybeWhen(
                   data: (version) => Text(
-                    'Version: $version',
+                    'Version: ${version.combinedString}',
                     textAlign: TextAlign.center,
                   ),
                   orElse: () => Container(),
@@ -742,6 +768,7 @@ extension on ColorMode {
       ColorMode.localsend => t.appName,
       ColorMode.oled => t.settingsTab.general.colorOptions.oled,
       ColorMode.yaru => 'Yaru',
+      ColorMode.custom => t.settingsTab.general.colorOptions.custom,
     };
   }
 }

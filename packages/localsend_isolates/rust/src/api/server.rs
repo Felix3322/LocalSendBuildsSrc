@@ -1,18 +1,22 @@
 use crate::frb_generated::StreamSink;
 use flutter_rust_bridge::frb;
-pub use localsend::http::dto_v2::{ProtocolTypeV2, RegisterDtoV2};
+pub use localsend::http::dto_v2::RegisterDtoV2;
 use localsend::http::server::ServerConfigV2;
 pub use localsend::http::server::TlsConfig;
 use localsend::http::server::common::save::FileUploadTarget;
 use localsend::http::server::internal::{InternalConfig, InternalEvent};
 pub use localsend::http::server::v2::SessionEndReasonV2;
 use localsend::http::server::v2::{PrepareUploadDecisionV2, ServerEventV2};
-pub use localsend::http::server::web::WebSendI18n;
-use localsend::http::server::web::{WebSendConfig, WebSendEvent};
+use localsend::http::server::web::{
+    WebConfig, WebMode as CoreWebMode, WebDownloadConfig, WebDownloadEvent,
+};
+pub use localsend::http::server::web::{WebI18n, WebPages};
 use localsend::http::state::ClientInfo;
 use localsend::model::discovery::DeviceType;
+use localsend::model::discovery::ProtocolType;
 use localsend::model::transfer::{FileContent, FileDto};
 use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc, oneshot};
 
 /// Events emitted by the HTTP server that must be handled by the application.
@@ -94,41 +98,101 @@ pub enum RsServerEvent {
         /// Command-line arguments forwarded by the other application instance.
         args: Vec<String>,
     },
+
+    /// The listening socket failed permanently, e.g. because the OS
+    /// invalidated it while the application was suspended (iOS reclaims the
+    /// sockets of suspended apps). The server has stopped itself; the
+    /// application must restart it to become reachable again.
+    ListenerFailed {
+        /// Description of the failure.
+        error: String,
+    },
 }
 
 pub struct RsHttpServer {
-    handle: localsend::http::server::ServerHandle,
+    instance: Arc<ServerInstance>,
     event_rx: Mutex<Option<mpsc::Receiver<ServerEventV2>>>,
-    stop_tx: Mutex<Option<oneshot::Sender<()>>>,
     pending_decision: Mutex<Option<(String, oneshot::Sender<PrepareUploadDecisionV2>)>>,
     pending_uploads: Mutex<HashMap<(String, String), oneshot::Sender<FileUploadTarget>>>,
-    web_event_rx: Mutex<Option<mpsc::Receiver<WebSendEvent>>>,
+    web_event_rx: Mutex<Option<mpsc::Receiver<WebDownloadEvent>>>,
     pending_download_decisions: Mutex<HashMap<String, oneshot::Sender<bool>>>,
     pending_downloads: Mutex<HashMap<(String, String), oneshot::Sender<FileContent>>>,
     internal_event_rx: Mutex<Option<mpsc::Receiver<InternalEvent>>>,
 }
 
-/// Configuration for web send: files offered for download by web browsers.
-///
-/// Web send can be enabled independently of the v2 protocol endpoints. When
-/// omitted, the download API responds with 403 and only the v2 endpoints run.
-pub struct WebSendParams {
-    /// The metadata of the files offered for download, mapped by file ID.
-    /// The content is requested per download via [RsServerEvent::WebFileDownload].
-    pub files: HashMap<String, FileDto>,
+/// The stoppable part of a running server, shared between [RsHttpServer] and
+/// [RUNNING_SERVER] so that a leftover instance can be stopped without its
+/// Dart owner.
+struct ServerInstance {
+    handle: localsend::http::server::ServerHandle,
+    stop_tx: Mutex<Option<oneshot::Sender<()>>>,
+}
 
-    /// Optional PIN that web clients must provide via the `pin` query parameter.
-    pub pin: Option<String>,
+impl ServerInstance {
+    /// Stops the server and waits until the listeners are closed, so the port
+    /// can be bound again. Does nothing when already stopped.
+    async fn stop(&self) {
+        if let Some(stop_tx) = self.stop_tx.lock().await.take() {
+            let _ = stop_tx.send(());
+            self.handle.wait_stopped().await;
+        }
+    }
+}
 
-    /// Translations for the web page, served via `/i18n.json`.
-    pub i18n: WebSendI18n,
+/// The most recently started server. A Flutter hot restart kills all Dart
+/// isolates without stopping the Rust server task, which would keep the port
+/// bound forever; [start_server] stops such a leftover instance before
+/// binding again.
+static RUNNING_SERVER: Mutex<Option<Arc<ServerInstance>>> = Mutex::const_new(None);
+
+/// Configuration for the pages served to browsers. Always part of the server
+/// configuration: even with web share disabled ([WebMode::Disabled]), the
+/// server serves the 403 page at `/`.
+pub struct WebParams {
+    /// What is served at `/` and which browser-facing API is active.
+    pub mode: WebMode,
+
+    /// Translations for the web pages, served via `/i18n.json`.
+    pub i18n: WebI18n,
+
+    /// Custom HTML pages replacing the embedded web pages.
+    /// Pages left `null` are served from the assets embedded at compile time.
+    pub pages: WebPages,
+}
+
+/// What is served at `/` and which browser-facing API is active.
+/// The modes are mutually exclusive: only one page can live at `/`.
+pub enum WebMode {
+    /// No web share active: `/` serves the 403 page and client certificates
+    /// are mandatory under TLS, so the 403 page is effectively only reachable
+    /// when encryption is off.
+    Disabled,
+
+    /// Web download: the download page and the download API, offering files for
+    /// download by web browsers.
+    ///
+    /// Web download can be enabled independently of the v2 protocol endpoints.
+    Download {
+        /// The metadata of the files offered for download, mapped by file ID.
+        /// The content is requested per download via [RsServerEvent::WebFileDownload].
+        files: HashMap<String, FileDto>,
+
+        /// Optional PIN that web clients must provide via the `pin` query parameter.
+        pin: Option<String>,
+    },
+
+    /// The upload page: web browsers upload files via the v2
+    /// `prepare-upload`/`upload` endpoints.
+    Upload,
 }
 
 /// Starts the HTTP server on the given port (IPv4 and IPv6).
 /// The server runs until [RsHttpServer::stop] is called.
 ///
-/// Passing [web_send] additionally enables the web send (download API) so that
-/// web browsers can download the offered files.
+/// [web] configures the pages served to browsers: [WebParams::mode] selects
+/// the download page ([WebMode::Download], so web browsers can download the
+/// offered files), the upload page ([WebMode::Upload]) or no web share at all
+/// ([WebMode::Disabled], serving the 403 page).
 ///
 /// Passing [show_token] enables the internal `show` endpoint that lets another
 /// application instance request this one to show itself (emitted as
@@ -144,24 +208,37 @@ pub async fn start_server(
     device_type: Option<DeviceType>,
     fingerprint: String,
     pin: Option<String>,
-    web_send: Option<WebSendParams>,
+    verify_checksums: bool,
+    web: WebParams,
     show_token: Option<String>,
 ) -> anyhow::Result<RsHttpServer> {
+    // Stop a server left over from before a hot restart (its Dart owner died
+    // without calling stop)
+    let mut running_server = RUNNING_SERVER.lock().await;
+    if let Some(previous) = running_server.take() {
+        previous.stop().await;
+    }
+
     let (event_tx, event_rx) = mpsc::channel::<ServerEventV2>(16);
     let (stop_tx, stop_rx) = oneshot::channel::<()>();
 
-    let (web_send_config, web_event_rx) = match web_send {
-        Some(web_send) => {
-            let (web_event_tx, web_event_rx) = mpsc::channel::<WebSendEvent>(16);
-            let config = WebSendConfig {
-                files: web_send.files,
-                pin: web_send.pin,
-                i18n: web_send.i18n,
+    let (web_mode, web_event_rx) = match web.mode {
+        WebMode::Disabled => (CoreWebMode::Disabled, None),
+        WebMode::Download { files, pin } => {
+            let (web_event_tx, web_event_rx) = mpsc::channel::<WebDownloadEvent>(16);
+            let mode = CoreWebMode::Download(WebDownloadConfig {
+                files,
+                pin,
                 event_tx: web_event_tx,
-            };
-            (Some(config), Some(web_event_rx))
+            });
+            (mode, Some(web_event_rx))
         }
-        None => (None, None),
+        WebMode::Upload => (CoreWebMode::Upload, None),
+    };
+    let web_config = WebConfig {
+        mode: web_mode,
+        i18n: web.i18n,
+        pages: web.pages,
     };
 
     let (internal_config, internal_event_rx) = match show_token {
@@ -187,16 +264,25 @@ pub async fn start_server(
             token: fingerprint,
         },
         internal_config,
-        Some(ServerConfigV2 { pin, event_tx }),
-        web_send_config,
+        Some(ServerConfigV2 {
+            pin,
+            verify_checksums,
+            event_tx,
+        }),
+        web_config,
         stop_rx,
     )
     .await?;
 
-    Ok(RsHttpServer {
+    let instance = Arc::new(ServerInstance {
         handle,
-        event_rx: Mutex::new(Some(event_rx)),
         stop_tx: Mutex::new(Some(stop_tx)),
+    });
+    *running_server = Some(instance.clone());
+
+    Ok(RsHttpServer {
+        instance,
+        event_rx: Mutex::new(Some(event_rx)),
         pending_decision: Mutex::new(None),
         pending_uploads: Mutex::new(HashMap::new()),
         web_event_rx: Mutex::new(web_event_rx),
@@ -210,8 +296,11 @@ impl RsHttpServer {
     /// Emits server events until the server is stopped.
     /// Can only be listened to once.
     ///
-    /// The v2 protocol, the web send (download API), and the internal endpoint
+    /// The v2 protocol, the web download (download API), and the internal endpoint
     /// events are all emitted on the same stream.
+    ///
+    /// Also returns when the Dart side of the stream is gone (e.g. after a
+    /// hot restart), so this call does not keep the server alive forever.
     pub async fn listen(&self, sink: StreamSink<RsServerEvent>) {
         let Some(mut event_rx) = self.event_rx.lock().await.take() else {
             let _ = sink.add_error(anyhow::anyhow!("Server events already listened to"));
@@ -222,27 +311,41 @@ impl RsHttpServer {
 
         let mut v2_open = true;
         loop {
-            tokio::select! {
+            let sink_open = tokio::select! {
                 event = event_rx.recv(), if v2_open => {
                     match event {
                         Some(event) => self.handle_server_event(&sink, event).await,
-                        None => v2_open = false,
+                        None => {
+                            v2_open = false;
+                            true
+                        }
                     }
                 }
                 event = recv_opt(&mut web_event_rx) => {
                     match event {
                         Some(event) => self.handle_web_event(&sink, event).await,
-                        None => web_event_rx = None,
+                        None => {
+                            web_event_rx = None;
+                            true
+                        }
                     }
                 }
                 event = recv_opt(&mut internal_event_rx) => {
                     match event {
                         Some(InternalEvent::Show { args }) => {
-                            let _ = sink.add(RsServerEvent::Show { args });
+                            sink.add(RsServerEvent::Show { args }).is_ok()
                         }
-                        None => internal_event_rx = None,
+                        None => {
+                            internal_event_rx = None;
+                            true
+                        }
                     }
                 }
+            };
+
+            // The Dart listener is gone; the remaining events have no receiver.
+            if !sink_open {
+                break;
             }
 
             if !v2_open && web_event_rx.is_none() && internal_event_rx.is_none() {
@@ -251,14 +354,19 @@ impl RsHttpServer {
         }
     }
 
-    async fn handle_server_event(&self, sink: &StreamSink<RsServerEvent>, event: ServerEventV2) {
+    /// Returns whether the sink is still open.
+    async fn handle_server_event(
+        &self,
+        sink: &StreamSink<RsServerEvent>,
+        event: ServerEventV2,
+    ) -> bool {
         match event {
-            ServerEventV2::Register { ip, info } => {
-                let _ = sink.add(RsServerEvent::Register {
+            ServerEventV2::Register { ip, info } => sink
+                .add(RsServerEvent::Register {
                     ip: ip.to_string(),
                     info,
-                });
-            }
+                })
+                .is_ok(),
             ServerEventV2::PrepareUpload {
                 session_id,
                 ip,
@@ -268,13 +376,14 @@ impl RsHttpServer {
                 decision_tx,
             } => {
                 *self.pending_decision.lock().await = Some((session_id.clone(), decision_tx));
-                let _ = sink.add(RsServerEvent::PrepareUpload {
+                sink.add(RsServerEvent::PrepareUpload {
                     session_id,
                     ip: ip.to_string(),
                     info,
                     cert_fingerprint,
                     files,
-                });
+                })
+                .is_ok()
             }
             ServerEventV2::FileUpload {
                 session_id,
@@ -286,11 +395,12 @@ impl RsHttpServer {
                     .lock()
                     .await
                     .insert((session_id.clone(), file_id.clone()), target_tx);
-                let _ = sink.add(RsServerEvent::FileUpload {
+                sink.add(RsServerEvent::FileUpload {
                     session_id,
                     file_id,
                     file,
-                });
+                })
+                .is_ok()
             }
             ServerEventV2::SessionEnd { session_id, reason } => {
                 // Drop stale upload responders of this session (their requests already ended).
@@ -298,7 +408,8 @@ impl RsHttpServer {
                     .lock()
                     .await
                     .retain(|(sid, _), _| sid != &session_id);
-                let _ = sink.add(RsServerEvent::SessionEnd { session_id, reason });
+                sink.add(RsServerEvent::SessionEnd { session_id, reason })
+                    .is_ok()
             }
             ServerEventV2::PrepareUploadAborted { session_id } => {
                 // Drop the stale decision responder (the request already ended).
@@ -310,20 +421,29 @@ impl RsHttpServer {
                         *pending = None;
                     }
                 }
-                let _ = sink.add(RsServerEvent::PrepareUploadAborted { session_id });
+                sink.add(RsServerEvent::PrepareUploadAborted { session_id })
+                    .is_ok()
             }
-            ServerEventV2::CancelReceived { ip, session_id } => {
-                let _ = sink.add(RsServerEvent::CancelReceived {
+            ServerEventV2::CancelReceived { ip, session_id } => sink
+                .add(RsServerEvent::CancelReceived {
                     ip: ip.to_string(),
                     session_id,
-                });
+                })
+                .is_ok(),
+            ServerEventV2::ListenerFailed { error } => {
+                sink.add(RsServerEvent::ListenerFailed { error }).is_ok()
             }
         }
     }
 
-    async fn handle_web_event(&self, sink: &StreamSink<RsServerEvent>, event: WebSendEvent) {
+    /// Returns whether the sink is still open.
+    async fn handle_web_event(
+        &self,
+        sink: &StreamSink<RsServerEvent>,
+        event: WebDownloadEvent,
+    ) -> bool {
         match event {
-            WebSendEvent::PrepareDownload {
+            WebDownloadEvent::PrepareDownload {
                 ip,
                 session_id,
                 user_agent,
@@ -333,13 +453,14 @@ impl RsHttpServer {
                     .lock()
                     .await
                     .insert(session_id.clone(), decision_tx);
-                let _ = sink.add(RsServerEvent::WebPrepareDownload {
+                sink.add(RsServerEvent::WebPrepareDownload {
                     ip: ip.to_string(),
                     session_id,
                     user_agent,
-                });
+                })
+                .is_ok()
             }
-            WebSendEvent::FileDownload {
+            WebDownloadEvent::FileDownload {
                 session_id,
                 file_id,
                 file,
@@ -349,11 +470,12 @@ impl RsHttpServer {
                     .lock()
                     .await
                     .insert((session_id.clone(), file_id.clone()), content_tx);
-                let _ = sink.add(RsServerEvent::WebFileDownload {
+                sink.add(RsServerEvent::WebFileDownload {
                     session_id,
                     file_id,
                     file,
-                });
+                })
+                .is_ok()
             }
         }
     }
@@ -387,7 +509,13 @@ impl RsHttpServer {
     /// and waits until the file has been received completely.
     ///
     /// The progress (fraction of [file_size]) is emitted on [sink]
-    /// while the file is being received.
+    /// while the file is being received. Failures are emitted on [sink] as
+    /// well: flutter_rust_bridge discards the returned `Result` of functions
+    /// taking a [StreamSink], so a returned error would become an uncaught
+    /// async error killing the calling isolate.
+    ///
+    /// Timestamps provided in the sender's file metadata are applied to the
+    /// written file by the server.
     pub async fn respond_file_upload(
         &self,
         sink: StreamSink<f64>,
@@ -396,59 +524,67 @@ impl RsHttpServer {
         path: Option<String>,
         file_descriptor: Option<i32>,
         file_size: u64,
-    ) -> anyhow::Result<()> {
-        let Some(target_tx) = self
-            .pending_uploads
-            .lock()
-            .await
-            .remove(&(session_id, file_id))
-        else {
-            return Err(anyhow::anyhow!("No pending file upload for this file"));
-        };
+    ) {
+        let result = async {
+            let Some(target_tx) = self
+                .pending_uploads
+                .lock()
+                .await
+                .remove(&(session_id, file_id))
+            else {
+                return Err(anyhow::anyhow!("No pending file upload for this file"));
+            };
 
-        let (progress_tx, mut progress_rx) = mpsc::channel::<u64>(16);
-        tokio::spawn(async move {
-            let mut last_emit = None::<std::time::Instant>;
-            while let Some(written) = progress_rx.recv().await {
-                let now = std::time::Instant::now();
-                let is_final = written >= file_size;
-                if !is_final {
-                    if let Some(last) = last_emit {
-                        if now.duration_since(last) < std::time::Duration::from_millis(20) {
-                            continue;
+            let (progress_tx, mut progress_rx) = mpsc::channel::<u64>(16);
+            let progress_sink = sink.clone();
+            tokio::spawn(async move {
+                let mut last_emit = None::<std::time::Instant>;
+                while let Some(written) = progress_rx.recv().await {
+                    let now = std::time::Instant::now();
+                    let is_final = written >= file_size;
+                    if !is_final {
+                        if let Some(last) = last_emit {
+                            if now.duration_since(last) < std::time::Duration::from_millis(20) {
+                                continue;
+                            }
                         }
                     }
+                    last_emit = Some(now);
+                    let progress = if file_size == 0 {
+                        1.0
+                    } else {
+                        (written as f64 / file_size as f64).min(1.0)
+                    };
+                    let _ = progress_sink.add(progress);
                 }
-                last_emit = Some(now);
-                let progress = if file_size == 0 {
-                    1.0
-                } else {
-                    (written as f64 / file_size as f64).min(1.0)
-                };
-                let _ = sink.add(progress);
+            });
+
+            let (result_tx, result_rx) = oneshot::channel::<Result<(), String>>();
+            let target = resolve_upload_target(path, file_descriptor, result_tx, progress_tx)?;
+
+            target_tx
+                .send(target)
+                .map_err(|_| anyhow::anyhow!("Upload request already ended"))?;
+
+            match result_rx.await {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(err)) => Err(anyhow::anyhow!(err)),
+                Err(_) => Err(anyhow::anyhow!("Upload request aborted")),
             }
-        });
+        }
+        .await;
 
-        let (result_tx, result_rx) = oneshot::channel::<Result<(), String>>();
-        let target = resolve_upload_target(path, file_descriptor, result_tx, progress_tx)?;
-
-        target_tx
-            .send(target)
-            .map_err(|_| anyhow::anyhow!("Upload request already ended"))?;
-
-        match result_rx.await {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(err)) => Err(anyhow::anyhow!(err)),
-            Err(_) => Err(anyhow::anyhow!("Upload request aborted")),
+        if let Err(err) = result {
+            let _ = sink.add_error(err);
         }
     }
 
-    /// Rejects the pending [RsServerEvent::FileUpload] event, e.g. because
+    /// Fails the pending [RsServerEvent::FileUpload] event, e.g. because
     /// the application failed to prepare a save target for the file.
     ///
     /// The upload request fails with an error response and the file is marked
     /// as failed. Does nothing if the upload was already answered.
-    pub async fn reject_file_upload(&self, session_id: String, file_id: String) {
+    pub async fn fail_file_upload(&self, session_id: String, file_id: String) {
         // Dropping the responder fails the request waiting for the target.
         self.pending_uploads
             .lock()
@@ -509,12 +645,12 @@ impl RsHttpServer {
         Ok(())
     }
 
-    /// Rejects the pending [RsServerEvent::WebFileDownload] event, e.g. because
+    /// Fails the pending [RsServerEvent::WebFileDownload] event, e.g. because
     /// the application failed to resolve a source for the file content.
     ///
     /// The download request fails with an error response.
     /// Does nothing if the download was already answered.
-    pub async fn reject_file_download(&self, session_id: String, file_id: String) {
+    pub async fn fail_file_download(&self, session_id: String, file_id: String) {
         // Dropping the responder fails the request waiting for the content.
         self.pending_downloads
             .lock()
@@ -526,11 +662,11 @@ impl RsHttpServer {
     /// transfer on the receiving side.
     ///
     /// Uploads that are already in progress still run to completion, but new
-    /// upload requests are rejected and a new session can be created.
+    /// upload requests fail and a new session can be created.
     /// No [RsServerEvent::SessionEnd] is emitted: the application initiated
     /// the cancellation itself.
     pub async fn cancel_session(&self, session_id: String) {
-        self.handle.cancel_v2_session(&session_id).await;
+        self.instance.handle.cancel_v2_session(&session_id).await;
 
         // Drop unanswered upload responders of this session so their requests
         // fail instead of waiting for a target forever.
@@ -543,9 +679,14 @@ impl RsHttpServer {
     /// Stops the server.
     /// Returns after the listeners are closed, so the port can be bound again.
     pub async fn stop(&self) {
-        if let Some(stop_tx) = self.stop_tx.lock().await.take() {
-            let _ = stop_tx.send(());
-            self.handle.wait_stopped().await;
+        self.instance.stop().await;
+
+        let mut running_server = RUNNING_SERVER.lock().await;
+        if running_server
+            .as_ref()
+            .is_some_and(|running| Arc::ptr_eq(running, &self.instance))
+        {
+            *running_server = None;
         }
     }
 }
@@ -619,28 +760,32 @@ fn resolve_file_content(
     }
 }
 
-#[frb(mirror(WebSendI18n))]
-pub struct _WebSendI18n {
+#[frb(mirror(WebI18n))]
+pub struct _WebI18n {
     pub waiting: String,
     pub enter_pin: String,
     pub invalid_pin: String,
     pub too_many_attempts: String,
     pub rejected: String,
+    pub upload_rejected: String,
+    pub busy: String,
     pub files: String,
     pub file_name: String,
     pub size: String,
+    pub drop_hint: String,
+}
+
+#[frb(mirror(WebPages))]
+pub struct _WebPages {
+    pub download_html: Option<String>,
+    pub upload_html: Option<String>,
+    pub error_403_html: Option<String>,
 }
 
 #[frb(mirror(TlsConfig))]
 pub struct _TlsConfig {
     pub cert: String,
     pub private_key: String,
-}
-
-#[frb(mirror(ProtocolTypeV2))]
-pub enum _ProtocolTypeV2 {
-    Http,
-    Https,
 }
 
 #[frb(mirror(RegisterDtoV2))]
@@ -651,7 +796,7 @@ pub struct _RegisterDtoV2 {
     pub device_type: Option<DeviceType>,
     pub fingerprint: String,
     pub port: u16,
-    pub protocol: ProtocolTypeV2,
+    pub protocol: ProtocolType,
     pub download: bool,
 }
 

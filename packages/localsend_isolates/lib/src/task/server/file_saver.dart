@@ -1,7 +1,7 @@
 import 'dart:io';
 
 import 'package:gal/gal.dart';
-import 'package:legalize/legalize.dart';
+import 'package:localsend_isolates/rust/api/filename.dart' as rust_filename;
 import 'package:localsend_isolates/util/android_channel.dart' as android_channel;
 import 'package:localsend_isolates/util/content_uri_helper.dart';
 import 'package:localsend_isolates/util/file_path_helper.dart';
@@ -115,29 +115,6 @@ Future<FileSaveTarget> reopenFileSaveTarget(FileSaveTarget target) async {
   );
 }
 
-/// Applies the file timestamps after the file has been written to a plain path.
-Future<void> applyFileTimestamps({
-  required FileSaveTarget target,
-  DateTime? lastModified,
-  DateTime? lastAccessed,
-}) async {
-  final path = target.path;
-  if (path == null) {
-    return;
-  }
-  final file = File(path);
-  if (lastModified != null) {
-    try {
-      await file.setLastModified(lastModified);
-    } catch (_) {}
-  }
-  if (lastAccessed != null) {
-    try {
-      await file.setLastAccessed(lastAccessed);
-    } catch (_) {}
-  }
-}
-
 /// Moves a file that has been written to the cache directory into the
 /// OS gallery (Photos/Videos).
 ///
@@ -180,12 +157,54 @@ Future<(bool, String?)> saveCachedFileToGallery({
   return (true, null);
 }
 
+/// Turns the peer-supplied [fileName] into a relative name that stays inside
+/// the destination directory.
+///
+/// Protocol v2 lets a name carry directory components, for folder transfers.
+/// The peer chooses them, so they get the same treatment as the base name:
+/// `..` and absolute names are refused outright rather than rewritten, since a
+/// name that tries to leave the destination is not a name to guess at, and
+/// every remaining component is sanitized. Without that, only the base name
+/// was checked and a directory could still be named `con`, end in a dot or
+/// carry control characters.
+///
+/// Throws `'Path traversal detected'` when the name tries to leave the
+/// destination.
+List<String> sanitizeRelativeName(String fileName) {
+  final parts = p.split(fileName);
+
+  final components = <String>[];
+  for (final part in parts) {
+    // `p.split` keeps the root of an absolute name ('/', 'C:\\', ...) as the
+    // first component, so this catches absolute names as well.
+    if (part == '..' || p.rootPrefix(part).isNotEmpty) {
+      throw 'Path traversal detected';
+    }
+    // A '.' component (and the empty ones `p.split` can produce) addresses the
+    // directory it is in, so it simply drops out.
+    if (part == '.' || part.isEmpty) {
+      continue;
+    }
+    components.add(rust_filename.sanitizeFileName(name: part));
+  }
+
+  // Everything collapsed, e.g. the name was empty or just '.'.
+  if (components.isEmpty) {
+    components.add(rust_filename.sanitizeFileName(name: ''));
+  }
+
+  return components;
+}
+
 /// If there is a file with the same name, then it appends a number to its file name
 Future<(String, String?, String)> digestFilePathAndPrepareDirectory({
   required String parentDirectory,
   required String fileName,
   required Set<String> createdDirectories,
 }) async {
+  final components = sanitizeRelativeName(fileName);
+  fileName = components.join('/');
+
   if (parentDirectory.startsWith('content://')) {
     final String documentUri;
     if (fileName.contains('/')) {
@@ -206,22 +225,22 @@ Future<(String, String?, String)> digestFilePathAndPrepareDirectory({
     return (destinationUri, documentUri, p.basename(fileName));
   }
 
-  final actualFileName = legalizeFilename(p.basename(fileName), os: Platform.operatingSystem);
-  final fileNameParts = p.split(fileName);
-  final dir = p.joinAll([parentDirectory, ...fileNameParts.take(fileNameParts.length - 1)]);
+  final actualFileName = components.last;
+  final dir = p.joinAll([parentDirectory, ...components.take(components.length - 1)]);
 
-  if (fileNameParts.length > 1) {
-    // Check path traversal
+  if (components.length > 1) {
+    // Second gate: the components above cannot escape on their own, but the
+    // resulting directory is what is about to be created.
     if (!p.isWithin(parentDirectory, dir)) {
       throw 'Path traversal detected';
     }
-
-    try {
-      Directory(dir).createSync(recursive: true);
-    } catch (e) {
-      _logger.warning('Could not create directory', e);
-    }
   }
+
+  // The destination directory may not exist anymore, e.g. because it was deleted
+  // or is on a drive that is no longer mounted. This also creates the
+  // sub-directories of a folder transfer. Errors are propagated so that the
+  // caller fails the upload instead of writing to a path that cannot be opened.
+  Directory(dir).createSync(recursive: true);
 
   String destinationPath;
   int counter = 1;

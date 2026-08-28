@@ -10,13 +10,16 @@ import 'package:localsend_isolates/rust/frb_generated.dart';
 
 part 'server.freezed.dart';
 
-// These functions are ignored because they are not marked as `pub`: `handle_server_event`, `handle_web_event`, `recv_opt`, `resolve_file_content`, `resolve_upload_target`
+// These functions are ignored because they are not marked as `pub`: `handle_server_event`, `handle_web_event`, `recv_opt`, `resolve_file_content`, `resolve_upload_target`, `stop`
+// These types are ignored because they are neither used by any `pub` functions nor (for structs and enums) marked `#[frb(unignore)]`: `ServerInstance`
 
 /// Starts the HTTP server on the given port (IPv4 and IPv6).
 /// The server runs until [RsHttpServer::stop] is called.
 ///
-/// Passing [web_send] additionally enables the web send (download API) so that
-/// web browsers can download the offered files.
+/// [web] configures the pages served to browsers: [WebParams::mode] selects
+/// the download page ([WebMode::Download], so web browsers can download the
+/// offered files), the upload page ([WebMode::Upload]) or no web share at all
+/// ([WebMode::Disabled], serving the 403 page).
 ///
 /// Passing [show_token] enables the internal `show` endpoint that lets another
 /// application instance request this one to show itself (emitted as
@@ -32,7 +35,8 @@ Future<RsHttpServer> startServer({
   DeviceType? deviceType,
   required String fingerprint,
   String? pin,
-  WebSendParams? webSend,
+  required bool verifyChecksums,
+  required WebParams web,
   String? showToken,
 }) => RustLib.instance.api.crateApiServerStartServer(
   port: port,
@@ -43,7 +47,8 @@ Future<RsHttpServer> startServer({
   deviceType: deviceType,
   fingerprint: fingerprint,
   pin: pin,
-  webSend: webSend,
+  verifyChecksums: verifyChecksums,
+  web: web,
   showToken: showToken,
 );
 
@@ -53,31 +58,34 @@ abstract class RsHttpServer implements RustOpaqueInterface {
   /// transfer on the receiving side.
   ///
   /// Uploads that are already in progress still run to completion, but new
-  /// upload requests are rejected and a new session can be created.
+  /// upload requests fail and a new session can be created.
   /// No [RsServerEvent::SessionEnd] is emitted: the application initiated
   /// the cancellation itself.
   Future<void> cancelSession({required String sessionId});
 
-  /// Emits server events until the server is stopped.
-  /// Can only be listened to once.
-  ///
-  /// The v2 protocol, the web send (download API), and the internal endpoint
-  /// events are all emitted on the same stream.
-  Stream<RsServerEvent> listen();
-
-  /// Rejects the pending [RsServerEvent::WebFileDownload] event, e.g. because
+  /// Fails the pending [RsServerEvent::WebFileDownload] event, e.g. because
   /// the application failed to resolve a source for the file content.
   ///
   /// The download request fails with an error response.
   /// Does nothing if the download was already answered.
-  Future<void> rejectFileDownload({required String sessionId, required String fileId});
+  Future<void> failFileDownload({required String sessionId, required String fileId});
 
-  /// Rejects the pending [RsServerEvent::FileUpload] event, e.g. because
+  /// Fails the pending [RsServerEvent::FileUpload] event, e.g. because
   /// the application failed to prepare a save target for the file.
   ///
   /// The upload request fails with an error response and the file is marked
   /// as failed. Does nothing if the upload was already answered.
-  Future<void> rejectFileUpload({required String sessionId, required String fileId});
+  Future<void> failFileUpload({required String sessionId, required String fileId});
+
+  /// Emits server events until the server is stopped.
+  /// Can only be listened to once.
+  ///
+  /// The v2 protocol, the web download (download API), and the internal endpoint
+  /// events are all emitted on the same stream.
+  ///
+  /// Also returns when the Dart side of the stream is gone (e.g. after a
+  /// hot restart), so this call does not keep the server alive forever.
+  Stream<RsServerEvent> listen();
 
   /// Answers the pending [RsServerEvent::WebFileDownload] event with the source
   /// the file content should be read from (either a path or a file descriptor).
@@ -90,7 +98,13 @@ abstract class RsHttpServer implements RustOpaqueInterface {
   /// and waits until the file has been received completely.
   ///
   /// The progress (fraction of [file_size]) is emitted on [sink]
-  /// while the file is being received.
+  /// while the file is being received. Failures are emitted on [sink] as
+  /// well: flutter_rust_bridge discards the returned `Result` of functions
+  /// taking a [StreamSink], so a returned error would become an uncaught
+  /// async error killing the calling isolate.
+  ///
+  /// Timestamps provided in the sender's file metadata are applied to the
+  /// written file by the server.
   Stream<double> respondFileUpload({required String sessionId, required String fileId, String? path, int? fileDescriptor, required BigInt fileSize});
 
   /// Answers the pending [RsServerEvent::WebPrepareDownload] event.
@@ -109,11 +123,6 @@ abstract class RsHttpServer implements RustOpaqueInterface {
   Future<void> stop();
 }
 
-enum ProtocolTypeV2 {
-  http,
-  https,
-}
-
 class RegisterDtoV2 {
   final String alias;
   final String version;
@@ -121,7 +130,7 @@ class RegisterDtoV2 {
   final DeviceType? deviceType;
   final String fingerprint;
   final int port;
-  final ProtocolTypeV2 protocol;
+  final ProtocolType protocol;
   final bool download;
 
   const RegisterDtoV2({
@@ -244,6 +253,15 @@ sealed class RsServerEvent with _$RsServerEvent {
     /// Command-line arguments forwarded by the other application instance.
     required List<String> args,
   }) = RsServerEvent_Show;
+
+  /// The listening socket failed permanently, e.g. because the OS
+  /// invalidated it while the application was suspended (iOS reclaims the
+  /// sockets of suspended apps). The server has stopped itself; the
+  /// application must restart it to become reachable again.
+  const factory RsServerEvent.listenerFailed({
+    /// Description of the failure.
+    required String error,
+  }) = RsServerEvent_ListenerFailed;
 }
 
 enum SessionEndReasonV2 {
@@ -268,25 +286,31 @@ class TlsConfig {
       identical(this, other) || other is TlsConfig && runtimeType == other.runtimeType && cert == other.cert && privateKey == other.privateKey;
 }
 
-class WebSendI18n {
+class WebI18n {
   final String waiting;
   final String enterPin;
   final String invalidPin;
   final String tooManyAttempts;
   final String rejected;
+  final String uploadRejected;
+  final String busy;
   final String files;
   final String fileName;
   final String size;
+  final String dropHint;
 
-  const WebSendI18n({
+  const WebI18n({
     required this.waiting,
     required this.enterPin,
     required this.invalidPin,
     required this.tooManyAttempts,
     required this.rejected,
+    required this.uploadRejected,
+    required this.busy,
     required this.files,
     required this.fileName,
     required this.size,
+    required this.dropHint,
   });
 
   @override
@@ -296,51 +320,107 @@ class WebSendI18n {
       invalidPin.hashCode ^
       tooManyAttempts.hashCode ^
       rejected.hashCode ^
+      uploadRejected.hashCode ^
+      busy.hashCode ^
       files.hashCode ^
       fileName.hashCode ^
-      size.hashCode;
+      size.hashCode ^
+      dropHint.hashCode;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is WebSendI18n &&
+      other is WebI18n &&
           runtimeType == other.runtimeType &&
           waiting == other.waiting &&
           enterPin == other.enterPin &&
           invalidPin == other.invalidPin &&
           tooManyAttempts == other.tooManyAttempts &&
           rejected == other.rejected &&
+          uploadRejected == other.uploadRejected &&
+          busy == other.busy &&
           files == other.files &&
           fileName == other.fileName &&
-          size == other.size;
+          size == other.size &&
+          dropHint == other.dropHint;
 }
 
-/// Configuration for web send: files offered for download by web browsers.
-///
-/// Web send can be enabled independently of the v2 protocol endpoints. When
-/// omitted, the download API responds with 403 and only the v2 endpoints run.
-class WebSendParams {
-  /// The metadata of the files offered for download, mapped by file ID.
-  /// The content is requested per download via [RsServerEvent::WebFileDownload].
-  final Map<String, FileDto> files;
+@freezed
+sealed class WebMode with _$WebMode {
+  const WebMode._();
 
-  /// Optional PIN that web clients must provide via the `pin` query parameter.
-  final String? pin;
+  /// No web share active: `/` serves the 403 page and client certificates
+  /// are mandatory under TLS, so the 403 page is effectively only reachable
+  /// when encryption is off.
+  const factory WebMode.disabled() = WebMode_Disabled;
 
-  /// Translations for the web page, served via `/i18n.json`.
-  final WebSendI18n i18N;
+  /// Web download: the download page and the download API, offering files for
+  /// download by web browsers.
+  ///
+  /// Web download can be enabled independently of the v2 protocol endpoints.
+  const factory WebMode.download({
+    /// The metadata of the files offered for download, mapped by file ID.
+    /// The content is requested per download via [RsServerEvent::WebFileDownload].
+    required Map<String, FileDto> files,
 
-  const WebSendParams({
-    required this.files,
-    this.pin,
-    required this.i18N,
+    /// Optional PIN that web clients must provide via the `pin` query parameter.
+    String? pin,
+  }) = WebMode_Download;
+
+  /// The upload page: web browsers upload files via the v2
+  /// `prepare-upload`/`upload` endpoints.
+  const factory WebMode.upload() = WebMode_Upload;
+}
+
+class WebPages {
+  final String? downloadHtml;
+  final String? uploadHtml;
+  final String? error403Html;
+
+  const WebPages({
+    this.downloadHtml,
+    this.uploadHtml,
+    this.error403Html,
   });
 
   @override
-  int get hashCode => files.hashCode ^ pin.hashCode ^ i18N.hashCode;
+  int get hashCode => downloadHtml.hashCode ^ uploadHtml.hashCode ^ error403Html.hashCode;
 
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is WebSendParams && runtimeType == other.runtimeType && files == other.files && pin == other.pin && i18N == other.i18N;
+      other is WebPages &&
+          runtimeType == other.runtimeType &&
+          downloadHtml == other.downloadHtml &&
+          uploadHtml == other.uploadHtml &&
+          error403Html == other.error403Html;
+}
+
+/// Configuration for the pages served to browsers. Always part of the server
+/// configuration: even with web share disabled ([WebMode::Disabled]), the
+/// server serves the 403 page at `/`.
+class WebParams {
+  /// What is served at `/` and which browser-facing API is active.
+  final WebMode mode;
+
+  /// Translations for the web pages, served via `/i18n.json`.
+  final WebI18n i18N;
+
+  /// Custom HTML pages replacing the embedded web pages.
+  /// Pages left `null` are served from the assets embedded at compile time.
+  final WebPages pages;
+
+  const WebParams({
+    required this.mode,
+    required this.i18N,
+    required this.pages,
+  });
+
+  @override
+  int get hashCode => mode.hashCode ^ i18N.hashCode ^ pages.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is WebParams && runtimeType == other.runtimeType && mode == other.mode && i18N == other.i18N && pages == other.pages;
 }

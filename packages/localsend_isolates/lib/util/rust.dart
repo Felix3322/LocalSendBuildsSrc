@@ -1,10 +1,11 @@
+import 'package:flutter_rust_bridge/flutter_rust_bridge.dart' show AnyhowException;
 import 'package:localsend_isolates/constants.dart';
 import 'package:localsend_isolates/model/device.dart';
 import 'package:localsend_isolates/model/dto/file_dto.dart';
 import 'package:localsend_isolates/model/dto/multicast_dto.dart';
+import 'package:localsend_isolates/rust/api/discovery.dart' as rust_discovery;
 import 'package:localsend_isolates/rust/api/http.dart' as rust_http;
 import 'package:localsend_isolates/rust/api/model.dart' as rust_model;
-import 'package:localsend_isolates/rust/api/multicast.dart' as rust_multicast;
 import 'package:localsend_isolates/rust/api/server.dart' as rust_server;
 import 'package:localsend_isolates/src/isolate/child/sync_provider.dart';
 import 'package:mime/mime.dart';
@@ -63,8 +64,8 @@ extension FileDtoExt on FileDto {
       preview: preview,
       metadata: metadata != null
           ? rust_model.FileMetadata(
-              modified: metadata!.lastModified?.toUtc().toIso8601String(),
-              accessed: metadata!.lastAccessed?.toUtc().toIso8601String(),
+              modified: metadata!.lastModified,
+              accessed: metadata!.lastAccessed,
             )
           : null,
     );
@@ -105,6 +106,7 @@ extension HumanErrorMessageExt on Object {
     final e = this;
     return switch (e) {
       rust_http.RsHttpClientError_StatusCode(:final status, :final message) when message != null => '[$status] $message',
+      AnyhowException(:final message) => message,
       _ => e.toString(),
     };
   }
@@ -121,52 +123,95 @@ extension RustFileDtoExt on rust_model.FileDto {
       preview: preview,
       metadata: metadata != null
           ? FileMetadata(
-              lastModified: metadata!.modified != null ? DateTime.tryParse(metadata!.modified!) : null,
-              lastAccessed: metadata!.accessed != null ? DateTime.tryParse(metadata!.accessed!) : null,
+              lastModified: metadata!.modified,
+              lastAccessed: metadata!.accessed,
             )
           : null,
     );
   }
 }
 
-extension MulticastMessageV2Ext on rust_multicast.MulticastMessageV2 {
-  Device toDevice(String ip) {
+extension RsStoredDeviceExt on rust_discovery.RsStoredDevice {
+  /// Maps the merged stored state to a [Device]: the best channel becomes the
+  /// dialed address, every channel is kept as a [HttpChannel], best first.
+  Device toDevice() {
+    final best = channels.first;
     return Device(
       signalingId: null,
-      ip: ip,
+      ip: best.host,
       version: version,
-      port: port,
-      https: protocol == rust_server.ProtocolTypeV2.https,
+      port: best.port,
+      https: best.protocol == rust_model.ProtocolType.https,
       fingerprint: fingerprint,
       alias: alias,
       deviceModel: deviceModel,
       deviceType: deviceType?.toDart() ?? DeviceType.desktop,
       download: download,
-      discoveryMethods: {MulticastDiscovery()},
+      channels: [
+        for (final channel in channels)
+          HttpChannel(
+            host: channel.host,
+            port: channel.port,
+            https: channel.protocol == rust_model.ProtocolType.https,
+          ),
+      ],
+    );
+  }
+}
+
+extension RsDeviceLogExt on rust_discovery.RsDeviceLog {
+  DeviceLog toDeviceLog() {
+    return DeviceLog(
+      timestamp: DateTime.fromMillisecondsSinceEpoch(timestampMillis.toInt()),
+      kind: switch (kind) {
+        rust_discovery.DeviceLogKind.discovered => DeviceLogKind.discovered,
+        rust_discovery.DeviceLogKind.updated => DeviceLogKind.updated,
+      },
+      channel: HttpChannel(
+        host: channel.host,
+        port: channel.port,
+        https: channel.protocol == rust_model.ProtocolType.https,
+      ),
+    );
+  }
+}
+
+extension DeviceToRsDiscoveredDeviceExt on Device {
+  rust_discovery.RsDiscoveredDevice toRsDiscoveredDevice(String ip) {
+    return rust_discovery.RsDiscoveredDevice(
+      alias: alias,
+      version: version,
+      deviceModel: deviceModel,
+      deviceType: deviceType.toRust(),
+      fingerprint: fingerprint,
+      host: ip,
+      port: port,
+      protocol: https ? rust_model.ProtocolType.https : rust_model.ProtocolType.http,
+      download: download,
     );
   }
 }
 
 extension RegisterDtoV2Ext on rust_server.RegisterDtoV2 {
-  Device toDevice(String ip, DiscoveryMethod? method) {
+  Device toDevice(String ip, {required bool withChannel}) {
     return Device(
       signalingId: null,
       ip: ip,
       version: version,
       port: port,
-      https: protocol == rust_server.ProtocolTypeV2.https,
+      https: protocol == rust_model.ProtocolType.https,
       fingerprint: fingerprint,
       alias: alias,
       deviceModel: deviceModel,
       deviceType: deviceType?.toDart() ?? DeviceType.desktop,
       download: download,
-      discoveryMethods: method == null ? const {} : {method},
+      channels: withChannel ? [HttpChannel(host: ip, port: port, https: protocol == rust_model.ProtocolType.https)] : const [],
     );
   }
 }
 
 extension RegisterResponseDtoExt on rust_model.RegisterResponseDto {
-  Device toDevice(String ip, int port, bool https, DiscoveryMethod method) {
+  Device toDevice(String ip, int port, bool https) {
     return Device(
       signalingId: null,
       ip: ip,
@@ -178,7 +223,7 @@ extension RegisterResponseDtoExt on rust_model.RegisterResponseDto {
       deviceModel: deviceModel,
       deviceType: deviceType?.toDart() ?? DeviceType.desktop,
       download: hasWebInterface,
-      discoveryMethods: {method},
+      channels: [HttpChannel(host: ip, port: port, https: https)],
     );
   }
 }
