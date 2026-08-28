@@ -19,23 +19,29 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      - name: Sync the upstream main branch when it advances
+      - name: Check out this fork
+        uses: actions/checkout@v6
+        with:
+          ssh-key: ${{ secrets.LOCALSEND_BUILDS_SSH_KEY }}
+          fetch-depth: 0
+
+      - name: Merge the upstream main branch when it advances
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
-          response="$(gh api \
-            --method POST \
-            "repos/${GITHUB_REPOSITORY}/merge-upstream" \
-            -f branch=main)"
-          merge_type="$(jq -er '.merge_type' <<<"${response}")"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          if [[ "${merge_type}" == "none" ]]; then
+          git remote add upstream https://github.com/localsend/localsend.git
+          git fetch --no-tags upstream main
+
+          if git merge-base --is-ancestor upstream/main HEAD; then
             echo "Already synchronized with localsend/localsend main."
             exit 0
           fi
 
-          echo "Synchronized localsend/localsend main using ${merge_type}."
-          gh workflow run ci-release.yml --ref main
+          git merge --no-ff -m "chore: sync localsend/localsend main [skip ci]" upstream/main
+          git push origin HEAD:main
+
+          GH_TOKEN="${{ github.token }}" gh workflow run ci-release.yml --ref main
