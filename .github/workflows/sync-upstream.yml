@@ -44,4 +44,6 @@ jobs:
           git merge --no-ff -m "chore: sync localsend/localsend main [skip ci]" upstream/main
           git push origin HEAD:main
 
-          GH_TOKEN="${{ github.token }}" gh workflow run ci-release.yml --ref main
+          GH_TOKEN="${{ github.token }}" gh workflow run ci-release.yml \
+            --repo "${GITHUB_REPOSITORY}" \
+            --ref main
