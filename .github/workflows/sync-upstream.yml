@@ -22,7 +22,7 @@ jobs:
       - name: Check out this fork
         uses: actions/checkout@v6
         with:
-          token: ${{ secrets.LOCALSEND_BUILDS_TOKEN }}
+          token: ${{ github.token }}
           fetch-depth: 0
 
       - name: Merge the upstream main branch when it advances
