@@ -1449,6 +1449,12 @@ class Translations$dialogs$addressInput$en {
   /// en: 'Enter address'
   String get title => 'Enter address';
 
+  /// en: 'Hashtag'
+  String get hashtag => 'Hashtag';
+
+  /// en: 'IP Address'
+  String get ip => 'IP Address';
+
   /// en: 'Recently used: '
   String get recentlyUsed => 'Recently used: ';
 }
