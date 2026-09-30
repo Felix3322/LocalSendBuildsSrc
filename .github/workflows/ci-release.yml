@@ -2,10 +2,13 @@ name: Build and publish preview release
 
 on:
   push:
+    branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   metadata:
@@ -43,6 +46,7 @@ jobs:
 
   android:
     name: Android APKs
+    if: github.event_name != 'pull_request'
     needs: metadata
     runs-on: ubuntu-24.04
 
@@ -115,6 +119,7 @@ jobs:
 
   linux-tar:
     name: Linux x86_64 tarball
+    if: github.event_name != 'pull_request'
     needs: metadata
     runs-on: ubuntu-24.04
 
@@ -163,6 +168,7 @@ jobs:
 
   linux-deb:
     name: Linux x86_64 DEB
+    if: github.event_name != 'pull_request'
     needs: metadata
     runs-on: ubuntu-24.04
 
@@ -215,6 +221,7 @@ jobs:
 
   linux-appimage:
     name: Linux x86_64 AppImage
+    if: github.event_name != 'pull_request'
     needs: metadata
     runs-on: ubuntu-24.04
 
@@ -304,24 +311,8 @@ jobs:
           }
           $global:LASTEXITCODE = 0
 
-          $cmakeFile = "C:/s/packages/localsend_isolates/rust_builder/windows/CMakeLists.txt"
-          $cmake = Get-Content -Path $cmakeFile -Raw
-          $oldManifest = "../../../../../../rust"
-          $newManifest = "../../../../../../../packages/localsend_isolates/rust"
-          if (-not $cmake.Contains($oldManifest)) {
-            throw "Expected Windows Rust manifest path was not found."
-          }
-          Set-Content -Path $cmakeFile -Value $cmake.Replace($oldManifest, $newManifest) -NoNewline
-
-          $runnerCmakeFile = "C:/s/app/windows/runner/CMakeLists.txt"
-          $runnerCmake = Get-Content -Path $runnerCmakeFile -Raw
-          $dwmapiLink = 'target_link_libraries(${BINARY_NAME} PRIVATE "dwmapi.lib")'
-          $runtimeObjectLink = 'target_link_libraries(${BINARY_NAME} PRIVATE "runtimeobject.lib")'
-          if (-not $runnerCmake.Contains($dwmapiLink)) {
-            throw "Expected Windows runner link target was not found."
-          }
-          Set-Content -Path $runnerCmakeFile -Value $runnerCmake.Replace($dwmapiLink, "$dwmapiLink`n$runtimeObjectLink") -NoNewline
-
+          # The Rust manifest path and runtimeobject.lib link are fixed upstream.
+          # Only omit the proprietary helper that preview builds do not package.
           $appCmakeFile = "C:/s/app/windows/CMakeLists.txt"
           $appCmake = Get-Content -Path $appCmakeFile -Raw
           $missingHelperInstall = '(?m)^\s*"localsend_msix_helper\.msix"\r?\n\s*"install_msix_helper\.ps1"\r?\n'
@@ -389,6 +380,9 @@ jobs:
 
   release:
     name: Publish prerelease and update website index
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
     needs:
       - metadata
       - android
